@@ -25,8 +25,20 @@ namespace {
 #ifdef TEC_TESTING
 thread_local bool abortForTest = false, rollbackAccepted = false, probeForTest = false;
 thread_local DWORD wfpTestCode = ERROR_SUCCESS;
+thread_local std::vector<GUID> probeKeys;
 constexpr UINT32 probeAddress = 0xc000027b; // 192.0.2.123, reserved for documentation.
 constexpr UINT16 probeTcpPort = 40571, probeUdpPort = 40572;
+
+std::string testText(const std::wstring& text) {
+    if (text.empty()) return {};
+    const int size = WideCharToMultiByte(CP_UTF8, 0, text.data(), static_cast<int>(text.size()),
+                                       nullptr, 0, nullptr, nullptr);
+    if (!size) return "<UTF-8 conversion failed>";
+    std::string result(size, '\0');
+    WideCharToMultiByte(CP_UTF8, 0, text.data(), static_cast<int>(text.size()),
+                        &result[0], size, nullptr, nullptr);
+    return result;
+}
 #endif
 struct Prefix {
     int family = 0;
@@ -285,6 +297,9 @@ struct Engine::Impl {
         if (result == ERROR_SUCCESS && !permit) {
             std::lock_guard<std::mutex> lock(events);
             blockKeys.push_back(filter.filterKey);
+#ifdef TEC_TESTING
+            if (probing) probeKeys.push_back(filter.filterKey);
+#endif
             if (layer.ale) {
                 FWPM_LAYER0* description = nullptr;
                 const DWORD lookup = FwpmLayerGetByKey0(engine, layer.key, &description);
@@ -610,6 +625,9 @@ bool Engine::start(const Policy& policy, std::function<void(Attempt)> callback,
     session.flags = FWPM_SESSION_FLAG_DYNAMIC;
     DWORD result = FwpmEngineOpen0(nullptr, RPC_C_AUTHN_WINNT, nullptr, &session, &p->engine);
     if (result != ERROR_SUCCESS) {
+#ifdef TEC_TESTING
+        wfpTestCode = result;
+#endif
         error = failure(L"필터 엔진을 열 수 없습니다. 관리자 권한을 확인하세요.", result);
         return false;
     }
@@ -764,6 +782,7 @@ void testWfpProbe() {
     std::wstring error, warning;
     tec::probeForTest = true;
     tec::wfpTestCode = ERROR_SUCCESS;
+    tec::probeKeys.clear();
     bool started;
     try {
         started = engine.start(policy, [&](tec::Attempt value) {
@@ -777,7 +796,7 @@ void testWfpProbe() {
         throw std::runtime_error("probe WFP filter setup failed; native error=" + std::to_string(tec::wfpTestCode));
     if (!warning.empty())
         throw std::runtime_error("probe cannot observe events: collection disabled or subscription failed; " +
-                                 std::string(warning.begin(), warning.end()));
+                                 tec::testText(warning));
     wchar_t executable[32768]{};
     if (!GetModuleFileNameW(nullptr, executable, 32768))
         throw std::runtime_error("probe GetModuleFileName failed; native error=" + std::to_string(GetLastError()));
@@ -814,12 +833,37 @@ void testWfpProbe() {
         return saw(IPPROTO_TCP, tec::probeTcpPort) && saw(IPPROTO_UDP, tec::probeUdpPort);
     });
     const size_t count = events.size();
+    std::string detail;
+    for (size_t i = 0; i < std::min<size_t>(events.size(), 4); ++i) {
+        const auto& value = events[i];
+        const auto separator = value.path.find_last_of(L"\\/");
+        const auto basename = separator == std::wstring::npos ? value.path : value.path.substr(separator + 1);
+        detail += "; event=" + tec::testText(basename) + "," + tec::testText(value.ip) +
+                  ":" + std::to_string(value.port) + "/" + std::to_string(value.protocol) +
+                  ",path_match=" + (_wcsicmp(value.path.c_str(), executable) == 0 ? "1" : "0");
+    }
     lock.unlock();
     engine.stop();
+    HANDLE check = nullptr;
+    DWORD native = FwpmEngineOpen0(nullptr, RPC_C_AUTHN_WINNT, nullptr, nullptr, &check);
+    if (native == ERROR_SUCCESS) {
+        for (const auto& key : tec::probeKeys) {
+            FWPM_FILTER0* filter = nullptr;
+            const DWORD lookup = FwpmFilterGetByKey0(check, &key, &filter);
+            if (filter) FwpmFreeMemory0(reinterpret_cast<void**>(&filter));
+            if (lookup != FWP_E_FILTER_NOT_FOUND) {
+                native = lookup == ERROR_SUCCESS ? ERROR_ALREADY_EXISTS : lookup;
+                break;
+            }
+        }
+        FwpmEngineClose0(check);
+    }
+    if (native != ERROR_SUCCESS || tec::probeKeys.size() != 2)
+        throw std::runtime_error("probe filter cleanup verification failed; native error=" + std::to_string(native));
     if (!observed)
         throw std::runtime_error("probe missing attributed TCP/UDP drops; matching callback events=" +
                                  std::to_string(count) + "; TCP WSA=" + std::to_string(tcpError) +
                                  "; UDP WSA=" + std::to_string(udpError) +
-                                 "; expected app path, 192.0.2.123, ports 40571/40572, protocols 6/17");
+                                 "; expected app path, 192.0.2.123, ports 40571/40572, protocols 6/17" + detail);
 }
 #endif
