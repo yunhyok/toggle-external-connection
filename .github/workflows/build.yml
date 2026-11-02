@@ -1,0 +1,36 @@
+name: Build and test installers
+on: [push, pull_request, workflow_dispatch]
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: windows-2022
+    strategy:
+      matrix:
+        target: [Win7, Win10-11]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build and run offline tests
+        shell: cmd
+        run: |
+          call "%ProgramFiles%\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build\vcvars64.bat"
+          powershell -NoProfile -ExecutionPolicy Bypass -File scripts\build.ps1 -Target ${{ matrix.target }}
+      - name: Validate WFP rules without activating them
+        shell: pwsh
+        run: .\build\${{ matrix.target }}\offline-tests.exe --ci-wfp-rollback
+      - name: Package installer
+        shell: pwsh
+        run: |
+          $setup = "$env:RUNNER_TEMP\inno-6.7.3.exe"
+          Invoke-WebRequest 'https://github.com/jrsoftware/issrc/releases/download/is-6_7_3/innosetup-6.7.3.exe' -OutFile $setup
+          if ((Get-FileHash $setup).Hash -ne '9c73c3bae7ed48d44112a0f48e66742c00090bdb5bef71d9d3c056c66e97b732') { throw 'Inno Setup checksum mismatch' }
+          $dest = "$env:RUNNER_TEMP\inno"
+          $process = Start-Process $setup -ArgumentList '/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART',"/DIR=`"$dest`"" -Wait -PassThru -WindowStyle Hidden
+          if ($process.ExitCode) { throw "Inno Setup install failed: $($process.ExitCode)" }
+          $iscc = Join-Path $dest 'ISCC.exe'
+          & $iscc "/DTarget=${{ matrix.target }}" packaging\setup.iss
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: installer-${{ matrix.target }}-x64
+          path: dist/*.exe
