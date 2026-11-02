@@ -7,6 +7,7 @@
 void testHistory();
 void testEngine();
 void testWfpRollback();
+void testWfpProbe();
 
 static void check(bool condition, const char* description) {
     if (!condition) throw std::runtime_error(description);
@@ -46,6 +47,11 @@ int main(int argc, char** argv) {
         if (argc == 2 && std::strcmp(argv[1], "--ci-wfp-rollback") == 0) {
             testWfpRollback();
             std::puts("PASS: Windows accepted staged WFP rules; transaction aborted.");
+            return 0;
+        }
+        if (argc == 2 && std::strcmp(argv[1], "--ci-wfp-probe") == 0) {
+            testWfpProbe();
+            std::puts("PASS: test process TCP and UDP denial events matched the destination and application.");
             return 0;
         }
         if (argc != 1) return 2;

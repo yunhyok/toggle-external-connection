@@ -118,6 +118,7 @@ struct Ui {
         if(logControl) {
             const auto issue=loggingReason();
             SetWindowTextW(logControl,issue.empty() ? notice.c_str() : (L"기록 불가 · " + issue).c_str());
+            layoutSettings();
         }
     }
     void addLog(const std::wstring& value) {
@@ -202,7 +203,7 @@ struct Ui {
         if (preview || engine.active()) return;
         const int selected = adapterIndex();
         if (selected < 0 || selected >= static_cast<int>(adapters.size())) {
-            failure(L"차단할 네트워크 어댑터를 선택하세요."); return;
+            failure(L"인트라넷을 사용할 어댑터를 선택하세요."); return;
         }
         tec::Settings candidate;
         candidate.guid = adapters[selected].guid;
@@ -286,7 +287,8 @@ struct Ui {
         else { visibleRows.clear(); if(preview) sampleHistory(); }
         const std::wstring app = lower(text(appSearch)), ip = lower(text(ipSearch));
         visibleRows.erase(std::remove_if(visibleRows.begin(), visibleRows.end(), [&](const tec::Row& row) {
-            return lower(row.first.path).find(app) == std::wstring::npos || lower(row.first.ip).find(ip) == std::wstring::npos;
+            const auto application=row.first.path.empty() ? L"프로그램 미확인" : row.first.path;
+            return lower(application).find(app) == std::wstring::npos || lower(row.first.ip).find(ip) == std::wstring::npos;
         }), visibleRows.end());
         SendMessageW(list, WM_SETREDRAW, FALSE, 0);
         ListView_DeleteAllItems(list);
@@ -300,7 +302,8 @@ struct Ui {
             LVITEMW item{}; item.mask = LVIF_TEXT; item.iItem = static_cast<int>(i); item.pszText = &values[0][0];
             ListView_InsertItem(list, &item);
             for (int j = 1; j < 7; ++j) ListView_SetItemText(list, static_cast<int>(i), j, &values[j][0]);
-            if (r.first.path == selection) ListView_SetItemState(list, static_cast<int>(i), LVIS_SELECTED, LVIS_SELECTED);
+            if ((!r.first.path.empty() && r.first.path==selection) || (r.first.path.empty() && selection==L"프로그램 미확인"))
+                ListView_SetItemState(list, static_cast<int>(i), LVIS_SELECTED, LVIS_SELECTED);
         }
         SendMessageW(list, WM_SETREDRAW, TRUE, 0); InvalidateRect(list, nullptr, TRUE);
         if (ListView_GetNextItem(list, -1, LVNI_SELECTED) < 0) SetWindowTextW(path, L"");
@@ -329,9 +332,16 @@ struct Ui {
     void layoutSettings() {
         RECT client{}; GetClientRect(settingsPane, &client);
         int width = MulDiv(client.right, 96, dpi);
+        RECT status{0,0,std::max(1,static_cast<int>(client.right)-s(36)),0};
+        HDC dc=GetDC(logControl); SelectObject(dc,normalFont);
+        const std::wstring statusText=text(logControl);
+        DrawTextW(dc,statusText.c_str(),-1,&status,DT_CALCRECT|DT_WORDBREAK);
+        ReleaseDC(logControl,dc);
+        const int statusHeight=std::max(43,MulDiv(status.bottom,96,dpi));
+        const int contentHeight=477+statusHeight+15;
         SCROLLINFO si{sizeof(si), SIF_RANGE | SIF_PAGE | SIF_POS};
-        si.nMin = 0; si.nMax = s(535) - 1; si.nPage = client.bottom;
-        scroll = std::max(0, std::min(scroll, std::max(0, s(535) - static_cast<int>(client.bottom))));
+        si.nMin = 0; si.nMax = s(contentHeight) - 1; si.nPage = client.bottom;
+        scroll = std::max(0, std::min(scroll, std::max(0, s(contentHeight) - static_cast<int>(client.bottom))));
         si.nPos = scroll; SetScrollInfo(settingsPane, SB_VERT, &si, TRUE);
         GetClientRect(settingsPane, &client); width = MulDiv(client.right, 96, dpi);
         const int y = -MulDiv(scroll, 96, dpi), margin = 18, gap = 18;
@@ -347,7 +357,7 @@ struct Ui {
         place(settingsChildren[4], margin+half+gap, y+328, half, 46);
         place(save, margin, y+389, 150, 40); place(trial, margin+164, y+389, 170, 40);
         place(settingsChildren[5], margin, y+448, width-36, 24);
-        place(logControl, margin, y+477, width-36, 43);
+        place(logControl, margin, y+477, width-36, statusHeight);
     }
     void layout() {
         if (!window || !settingsPane) return;
@@ -359,13 +369,15 @@ struct Ui {
         place(historyPane,22,154,w-44,std::max(80,h-195));
         layoutSettings();
         RECT hr{}; GetClientRect(historyPane,&hr); const int hw=MulDiv(hr.right,96,dpi), hh=MulDiv(hr.bottom,96,dpi);
-        place(GetDlgItem(historyPane,2001),18,16,200,22);
-        place(GetDlgItem(historyPane,2002),hw/2,16,180,22);
-        place(appSearch,18,43,hw/2-36,31); place(ipSearch,hw/2,43,hw/2-130,31);
-        place(GetDlgItem(historyPane,refreshButton),hw-112,43,94,31);
+        const bool compact=hh<220;
+        const int filterTop=compact ? 31 : 43, listTop=compact ? 72 : 90;
+        place(GetDlgItem(historyPane,2001),18,compact ? 8 : 16,200,22);
+        place(GetDlgItem(historyPane,2002),hw/2,compact ? 8 : 16,180,22);
+        place(appSearch,18,filterTop,hw/2-36,compact ? 28 : 31); place(ipSearch,hw/2,filterTop,hw/2-130,compact ? 28 : 31);
+        place(GetDlgItem(historyPane,refreshButton),hw-112,filterTop,94,compact ? 28 : 31);
         const bool showPathLabel=hh>=230;
         ShowWindow(GetDlgItem(historyPane,2003),showPathLabel ? SW_SHOW : SW_HIDE);
-        place(list,18,90,hw-36,std::max(30,hh-(showPathLabel ? 179 : 151)));
+        place(list,18,listTop,hw-36,std::max(20,hh-listTop-(showPathLabel ? 89 : 61)));
         place(GetDlgItem(historyPane,2003),18,hh-75,hw-36,22);
         place(path,18,hh-47,hw-36,29);
         InvalidateRect(window,nullptr,TRUE);
@@ -594,6 +606,7 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wp, LPARAM lp) {
             if(GetTickCount64()>=ui->trialUntil) ui->stop(L"60초 시험 차단이 끝나 외부 연결을 허용합니다.");
             else InvalidateRect(hwnd,nullptr,FALSE);
         } else if(wp==timerRefresh) {
+            if(!ui->preview && !ui->trayVisible) ui->updateTray();
             if(ui->healthCheck.valid() && ui->healthCheck.wait_for(std::chrono::milliseconds(0))==std::future_status::ready) {
                 const auto result=ui->healthCheck.get();
                 if(result.first==ui->generation && ui->engine.active() && !result.second)
@@ -612,7 +625,11 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wp, LPARAM lp) {
             if(ui->historyMode && IsWindowVisible(hwnd)) ui->refreshHistory();
         } return 0;
     case WM_CLOSE:
-        if(ui->preview) DestroyWindow(hwnd); else ShowWindow(hwnd,SW_HIDE); return 0;
+        if(ui->preview) DestroyWindow(hwnd);
+        else if(ui->trayVisible) ShowWindow(hwnd,SW_HIDE);
+        else if(MessageBoxW(hwnd,L"트레이를 사용할 수 없습니다. 앱을 종료하고 외부 연결을 허용할까요?",
+                L"외부 연결 제어",MB_YESNO|MB_DEFBUTTON2|MB_ICONQUESTION)==IDYES) DestroyWindow(hwnd);
+        return 0;
     case WM_DESTROY: {
         ++ui->generation;
         if(ui->trialCancel) SetEvent(ui->trialCancel);
@@ -649,8 +666,10 @@ bool elevate(bool elevatedArgument) {
     if(IsUserAnAdmin()) return true;
     if(elevatedArgument) { MessageBoxW(nullptr,L"관리자 권한을 얻지 못했습니다.",L"실행할 수 없음",MB_OK|MB_ICONERROR); return false; }
     const std::wstring exe=tec::installedExe();
+    const std::wstring workingDirectory=exe.substr(0,exe.find_last_of(L"\\/"));
     SHELLEXECUTEINFOW request{}; request.cbSize=sizeof(request); request.fMask=SEE_MASK_FLAG_NO_UI;
-    request.lpVerb=L"runas"; request.lpFile=exe.c_str(); request.lpParameters=L"--elevated"; request.nShow=SW_SHOWNORMAL;
+    request.lpVerb=L"runas"; request.lpFile=exe.c_str(); request.lpDirectory=workingDirectory.c_str();
+    request.lpParameters=L"--elevated"; request.nShow=SW_SHOWNORMAL;
     if(!ShellExecuteExW(&request)) {
         const DWORD code=GetLastError();
         MessageBoxW(nullptr,code==ERROR_CANCELLED ? L"관리자 권한 요청이 취소되어 실행을 마쳤습니다." : L"관리자 권한으로 시작하지 못했습니다. 설치 상태를 확인하세요.",
@@ -706,6 +725,7 @@ int WINAPI wWinMain(HINSTANCE app, HINSTANCE, PWSTR, int) {
         WS_OVERLAPPEDWINDOW,work.left+(work.right-work.left-width)/2,work.top+(work.bottom-work.top-height)/2,width,height,
         nullptr,nullptr,instance,nullptr);
     if(!window) { if(singleton) CloseHandle(singleton); return 2; }
+    if(!state.preview && taskbarCreated) ChangeWindowMessageFilterEx(window,taskbarCreated,MSGFLT_ALLOW,nullptr);
     if(!state.preview) {
         std::wstring error; state.dir=tec::storageDir(error);
         if(state.dir.empty()) { state.failure(error); DestroyWindow(window); }
@@ -718,6 +738,7 @@ int WINAPI wWinMain(HINSTANCE app, HINSTANCE, PWSTR, int) {
             state.loadAdapters();
             // Setting edit notifications invalidate confirmation while fields are populated.
             state.confirmed=loaded && state.adapterIndex()>=0;
+            if(state.confirmed) state.addLog(L"저장된 인트라넷 설정을 사용합니다.");
         }
     } else { state.loadAdapters(); state.addLog(L"읽기 전용 UI 미리 보기입니다. 표시된 어댑터와 기록은 예시입니다."); }
     if(IsWindow(window)) {

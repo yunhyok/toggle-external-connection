@@ -11,6 +11,10 @@
 #include <cstring>
 #include <mutex>
 #include <stdexcept>
+#ifdef TEC_TESTING
+#include <chrono>
+#include <condition_variable>
+#endif
 
 #pragma comment(lib, "Fwpuclnt.lib")
 #pragma comment(lib, "Rpcrt4.lib")
@@ -19,7 +23,10 @@
 namespace tec {
 namespace {
 #ifdef TEC_TESTING
-thread_local bool abortForTest = false, rollbackAccepted = false;
+thread_local bool abortForTest = false, rollbackAccepted = false, probeForTest = false;
+thread_local DWORD wfpTestCode = ERROR_SUCCESS;
+constexpr UINT32 probeAddress = 0xc000027b; // 192.0.2.123, reserved for documentation.
+constexpr UINT16 probeTcpPort = 40571, probeUdpPort = 40572;
 #endif
 struct Prefix {
     int family = 0;
@@ -132,7 +139,61 @@ struct Engine::Impl {
     bool accepting = false;
 #ifdef TEC_TESTING
     std::function<DWORD(const Layer&, const FWPM_FILTER0&)> inspect;
+    bool probing = false;
+    std::vector<UINT8> probeApp;
     static void selfTest();
+
+    bool probeSafe(const Layer& layer, const FWPM_FILTER0& filter) const {
+        if (!IsEqualGUID(*layer.key, FWPM_LAYER_ALE_AUTH_CONNECT_V4) ||
+            filter.action.type != FWP_ACTION_BLOCK || filter.numFilterConditions != 4 || probeApp.empty())
+            return false;
+        bool address = false, app = false;
+        int protocol = -1, port = -1;
+        for (UINT32 i = 0; i < filter.numFilterConditions; ++i) {
+            const auto& condition = filter.filterCondition[i];
+            const auto& value = condition.conditionValue;
+            if (condition.matchType != FWP_MATCH_EQUAL) return false;
+            if (IsEqualGUID(condition.fieldKey, FWPM_CONDITION_IP_REMOTE_ADDRESS) &&
+                value.type == FWP_V4_ADDR_MASK && value.v4AddrMask)
+                address = value.v4AddrMask->addr == probeAddress && value.v4AddrMask->mask == 0xffffffffu;
+            else if (IsEqualGUID(condition.fieldKey, FWPM_CONDITION_ALE_APP_ID) &&
+                     value.type == FWP_BYTE_BLOB_TYPE && value.byteBlob && value.byteBlob->data)
+                app = value.byteBlob->size == probeApp.size() &&
+                      std::memcmp(value.byteBlob->data, probeApp.data(), probeApp.size()) == 0;
+            else if (IsEqualGUID(condition.fieldKey, FWPM_CONDITION_IP_PROTOCOL) && value.type == FWP_UINT8)
+                protocol = value.uint8;
+            else if (IsEqualGUID(condition.fieldKey, FWPM_CONDITION_IP_REMOTE_PORT) && value.type == FWP_UINT16)
+                port = value.uint16;
+            else return false;
+        }
+        return address && app && ((protocol == IPPROTO_TCP && port == probeTcpPort) ||
+                                  (protocol == IPPROTO_UDP && port == probeUdpPort));
+    }
+
+    DWORD probeRules() {
+        wchar_t executable[32768]{};
+        const DWORD length = GetModuleFileNameW(nullptr, executable, 32768);
+        if (!length || length >= 32768) return ERROR_INSUFFICIENT_BUFFER;
+        FWP_BYTE_BLOB* app = nullptr;
+        DWORD result = FwpmGetAppIdFromFileName0(executable, &app);
+        if (result != ERROR_SUCCESS) return result;
+        probeApp.assign(app->data, app->data + app->size);
+        FwpmFreeMemory0(reinterpret_cast<void**>(&app));
+        FWP_BYTE_BLOB blob{static_cast<UINT32>(probeApp.size()), probeApp.data()};
+        FWP_V4_ADDR_AND_MASK destination{probeAddress, 0xffffffffu};
+        auto address = number(FWPM_CONDITION_IP_REMOTE_ADDRESS, FWP_V4_ADDR_MASK, 0);
+        address.conditionValue.v4AddrMask = &destination;
+        auto identity = number(FWPM_CONDITION_ALE_APP_ID, FWP_BYTE_BLOB_TYPE, 0);
+        identity.conditionValue.byteBlob = &blob;
+        for (const int protocol : {IPPROTO_TCP, IPPROTO_UDP}) {
+            result = add(layers[4], false, {address, identity,
+                         number(FWPM_CONDITION_IP_PROTOCOL, FWP_UINT8, protocol),
+                         number(FWPM_CONDITION_IP_REMOTE_PORT, FWP_UINT16,
+                                protocol == IPPROTO_TCP ? probeTcpPort : probeUdpPort)});
+            if (result != ERROR_SUCCESS) return result;
+        }
+        return ERROR_SUCCESS;
+    }
 #endif
 
     static void CALLBACK event(void* context, const FWPM_NET_EVENT1* value) noexcept {
@@ -214,6 +275,8 @@ struct Engine::Impl {
         filter.numFilterConditions = static_cast<UINT32>(conditions.size());
         filter.filterCondition = conditions.data();
 #ifdef TEC_TESTING
+        // Live CI probes must never install the application's wildcard transport blocks.
+        if (probing && !probeSafe(layer, filter)) return ERROR_INVALID_PARAMETER;
         if (inspect) return inspect(layer, filter);
 #endif
         if (!permit && !guid(filter.filterKey)) return ERROR_GEN_FAILURE;
@@ -482,6 +545,31 @@ void Engine::Impl::selfTest() {
     drop.filterId = 77;
     event(&fake, &value);
     assert(observed.size() == 4);
+
+    fake.probing = true;
+    fake.probeApp = {1, 2};
+    fake.inspect = [](const Layer&, const FWPM_FILTER0&) -> DWORD { return ERROR_SUCCESS; };
+    assert(fake.add(layers[4], false, {}) == ERROR_INVALID_PARAMETER);
+    assert(fake.add(layers[1], false, {}) == ERROR_INVALID_PARAMETER);
+    FWP_BYTE_BLOB app{2, fake.probeApp.data()};
+    FWP_V4_ADDR_AND_MASK address{probeAddress, 0xffffffffu};
+    auto endpoint = number(FWPM_CONDITION_IP_REMOTE_ADDRESS, FWP_V4_ADDR_MASK, 0);
+    endpoint.conditionValue.v4AddrMask = &address;
+    auto identity = number(FWPM_CONDITION_ALE_APP_ID, FWP_BYTE_BLOB_TYPE, 0);
+    identity.conditionValue.byteBlob = &app;
+    auto conditions = std::vector<FWPM_FILTER_CONDITION0>{endpoint, identity,
+        number(FWPM_CONDITION_IP_PROTOCOL, FWP_UINT8, IPPROTO_TCP),
+        number(FWPM_CONDITION_IP_REMOTE_PORT, FWP_UINT16, probeTcpPort)};
+    assert(fake.add(layers[4], false, conditions) == ERROR_SUCCESS);
+    assert(fake.add(layers[4], true, conditions) == ERROR_INVALID_PARAMETER);
+    address.mask = 0xffffff00;
+    assert(fake.add(layers[4], false, conditions) == ERROR_INVALID_PARAMETER);
+    address.mask = 0xffffffff;
+    address.addr ^= 1;
+    assert(fake.add(layers[4], false, conditions) == ERROR_INVALID_PARAMETER);
+    address.addr = probeAddress;
+    conditions[3].conditionValue.uint16 = 443;
+    assert(fake.add(layers[4], false, conditions) == ERROR_INVALID_PARAMETER);
 }
 #endif
 
@@ -508,6 +596,9 @@ bool Engine::start(const Policy& policy, std::function<void(Attempt)> callback,
     logWarning.clear();
     if (p->running) { error = L"이미 차단 중입니다."; return false; }
     p->close();
+#ifdef TEC_TESTING
+    p->probing = probeForTest;
+#endif
     std::vector<Prefix> networks, dns, dhcp;
     if (!policy.luid || policy.networks.empty() ||
         !readPrefixes(policy.networks, false, networks) || !readPrefixes(policy.dns, true, dns) ||
@@ -542,6 +633,8 @@ bool Engine::start(const Policy& policy, std::function<void(Attempt)> callback,
         subscription.enumTemplate = &eventTemplate;
         result = FwpmNetEventSubscribe0(p->engine, &subscription, Impl::event, p.get(), &p->subscription);
         if (result != ERROR_SUCCESS) logWarning = failure(L"차단은 가능하지만 시도 기록을 시작하지 못했습니다.", result);
+    } else if (result != ERROR_SUCCESS) {
+        logWarning = failure(L"Windows 네트워크 이벤트 수집 상태를 조회할 수 없습니다.", result);
     } else {
         logWarning = L"Windows 네트워크 이벤트 수집이 꺼져 있거나 조회할 수 없어 시도를 기록할 수 없습니다.";
     }
@@ -553,17 +646,25 @@ bool Engine::start(const Policy& policy, std::function<void(Attempt)> callback,
         sublayer.displayData.name = const_cast<wchar_t*>(L"TEC 외부 연결 전환");
         sublayer.weight = 0x8000;
         if (result == ERROR_SUCCESS) result = FwpmSubLayerAdd0(p->engine, &sublayer, nullptr);
-        if (result == ERROR_SUCCESS) result = p->rules(policy, networks, dns, dhcp);
+        if (result == ERROR_SUCCESS) {
+#ifdef TEC_TESTING
+            if (p->probing) result = p->probeRules();
+            else
+#endif
+                result = p->rules(policy, networks, dns, dhcp);
+        }
         if (result == ERROR_SUCCESS) {
 #ifdef TEC_TESTING
             if (abortForTest) {
                 result = FwpmTransactionAbort0(p->engine);
+                wfpTestCode = result;
                 rollbackAccepted = result == ERROR_SUCCESS;
                 for (const auto& key : p->blockKeys) {
                     FWPM_FILTER0* filter = nullptr;
                     const DWORD lookup = FwpmFilterGetByKey0(p->engine, &key, &filter);
                     if (filter) FwpmFreeMemory0(reinterpret_cast<void**>(&filter));
                     rollbackAccepted &= lookup == FWP_E_FILTER_NOT_FOUND;
+                    if (lookup != FWP_E_FILTER_NOT_FOUND) wfpTestCode = lookup;
                 }
                 result = ERROR_CANCELLED;
             } else
@@ -573,6 +674,9 @@ bool Engine::start(const Policy& policy, std::function<void(Attempt)> callback,
         else FwpmTransactionAbort0(p->engine);
     }
     if (result != ERROR_SUCCESS) {
+#ifdef TEC_TESTING
+        if (result != ERROR_CANCELLED) wfpTestCode = result;
+#endif
         error = failure(L"차단 규칙을 적용하지 못했습니다. 변경 사항을 취소했습니다.", result);
         p->close();
         return false;
@@ -635,9 +739,87 @@ void testWfpRollback() {
     std::wstring error, warning;
     tec::abortForTest = true;
     tec::rollbackAccepted = false;
+    tec::wfpTestCode = ERROR_SUCCESS;
     engine.start(policy, {}, error, warning);
     tec::abortForTest = false;
     if (!tec::rollbackAccepted || engine.active())
-        throw std::runtime_error("WFP rejected staged filters or transaction rollback failed");
+        throw std::runtime_error("WFP staging/rollback failed; native error=" + std::to_string(tec::wfpTestCode));
+}
+
+void testWfpProbe() {
+    wchar_t actions[16]{};
+    if (!GetEnvironmentVariableW(L"GITHUB_ACTIONS", actions, 16) || wcscmp(actions, L"true") != 0)
+        throw std::runtime_error("WFP live probe is restricted to GitHub Actions");
+    WSADATA winsock{};
+    const int startup = WSAStartup(MAKEWORD(2, 2), &winsock);
+    if (startup) throw std::runtime_error("probe WSAStartup failed; native error=" + std::to_string(startup));
+    struct Winsock { ~Winsock() { WSACleanup(); } } cleanup;
+    std::mutex mutex;
+    std::condition_variable changed;
+    std::vector<tec::Attempt> events;
+    tec::Engine engine;
+    tec::Policy policy;
+    policy.luid = 123;
+    policy.networks = {L"192.0.2.0/24"};
+    std::wstring error, warning;
+    tec::probeForTest = true;
+    tec::wfpTestCode = ERROR_SUCCESS;
+    bool started;
+    try {
+        started = engine.start(policy, [&](tec::Attempt value) {
+            std::lock_guard<std::mutex> lock(mutex);
+            events.push_back(std::move(value));
+            changed.notify_one();
+        }, error, warning);
+    } catch (...) { tec::probeForTest = false; throw; }
+    tec::probeForTest = false;
+    if (!started)
+        throw std::runtime_error("probe WFP filter setup failed; native error=" + std::to_string(tec::wfpTestCode));
+    if (!warning.empty())
+        throw std::runtime_error("probe cannot observe events: collection disabled or subscription failed; " +
+                                 std::string(warning.begin(), warning.end()));
+    wchar_t executable[32768]{};
+    if (!GetModuleFileNameW(nullptr, executable, 32768))
+        throw std::runtime_error("probe GetModuleFileName failed; native error=" + std::to_string(GetLastError()));
+    auto saw = [&](int protocol, int port) {
+        return std::any_of(events.begin(), events.end(), [&](const tec::Attempt& value) {
+            return value.protocol == protocol && value.port == port && value.ip == L"192.0.2.123" &&
+                   _wcsicmp(value.path.c_str(), executable) == 0;
+        });
+    };
+    int tcpError = 0, udpError = 0;
+    for (const int protocol : {IPPROTO_TCP, IPPROTO_UDP}) {
+        SOCKET socket = ::socket(AF_INET, protocol == IPPROTO_TCP ? SOCK_STREAM : SOCK_DGRAM, protocol);
+        if (socket == INVALID_SOCKET)
+            throw std::runtime_error("probe socket failed; native error=" + std::to_string(WSAGetLastError()));
+        u_long nonblocking = 1;
+        if (ioctlsocket(socket, FIONBIO, &nonblocking) == SOCKET_ERROR) {
+            const int code = WSAGetLastError(); closesocket(socket);
+            throw std::runtime_error("probe nonblocking socket failed; native error=" + std::to_string(code));
+        }
+        sockaddr_in target{};
+        target.sin_family = AF_INET;
+        target.sin_addr.S_un.S_addr = htonl(tec::probeAddress);
+        target.sin_port = htons(protocol == IPPROTO_TCP ? tec::probeTcpPort : tec::probeUdpPort);
+        const int result = protocol == IPPROTO_TCP ?
+            connect(socket, reinterpret_cast<const sockaddr*>(&target), sizeof(target)) :
+            sendto(socket, "p", 1, 0, reinterpret_cast<const sockaddr*>(&target), sizeof(target));
+        const int code = result == SOCKET_ERROR ? WSAGetLastError() : 0;
+        closesocket(socket);
+        if (protocol == IPPROTO_TCP) tcpError = code;
+        else udpError = code;
+    }
+    std::unique_lock<std::mutex> lock(mutex);
+    const bool observed = changed.wait_for(lock, std::chrono::seconds(8), [&] {
+        return saw(IPPROTO_TCP, tec::probeTcpPort) && saw(IPPROTO_UDP, tec::probeUdpPort);
+    });
+    const size_t count = events.size();
+    lock.unlock();
+    engine.stop();
+    if (!observed)
+        throw std::runtime_error("probe missing attributed TCP/UDP drops; matching callback events=" +
+                                 std::to_string(count) + "; TCP WSA=" + std::to_string(tcpError) +
+                                 "; UDP WSA=" + std::to_string(udpError) +
+                                 "; expected app path, 192.0.2.123, ports 40571/40572, protocols 6/17");
 }
 #endif
