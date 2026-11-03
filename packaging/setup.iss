@@ -56,6 +56,7 @@ const
   UninstallKey = 'Software\Microsoft\Windows\CurrentVersion\Uninstall\{CA78C24A-7964-4F3A-8F40-DA64E9D82A11}_is1';
 var
   GuardExtracted: Boolean;
+  DestinationNote: TNewStaticText;
 
 function RunGuard(const Mode: String): Boolean;
 var
@@ -71,7 +72,15 @@ end;
 
 procedure InitializeWizard;
 begin
-  WizardForm.SelectDirLabel.Caption := CustomMessage('DestinationHelp');
+  DestinationNote := TNewStaticText.Create(WizardForm);
+  DestinationNote.Parent := WizardForm.SelectDirPage;
+  DestinationNote.Left := WizardForm.DirEdit.Left;
+  DestinationNote.Top := WizardForm.DirEdit.Top + WizardForm.DirEdit.Height + ScaleY(16);
+  DestinationNote.Width := WizardForm.SelectDirBrowseLabel.Width;
+  DestinationNote.AutoSize := False;
+  DestinationNote.WordWrap := True;
+  DestinationNote.Caption := CustomMessage('DestinationHelp');
+  DestinationNote.AdjustHeight;
 end;
 
 function PrepareToInstall(var NeedsRestart: Boolean): String;

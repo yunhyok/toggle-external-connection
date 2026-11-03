@@ -10,10 +10,15 @@ if (Test-Path $key) { throw 'The runner already has an installation; refusing to
 $default = Join-Path $env:ProgramFiles 'Toggle External Connection'
 $alternate = Join-Path ([IO.Path]::GetPathRoot($env:ProgramFiles)) "TEC Installer Smoke $env:GITHUB_RUN_ID\Alternate Folder"
 $silent = '/SP-','/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART'
+$script:setupCount = 0
 function Invoke-Setup([string]$Destination) {
-    $arguments = $silent
+    $script:setupCount++
+    $log = Join-Path $env:RUNNER_TEMP "TEC-setup-$script:setupCount.log"
+    $arguments = $silent + "/LOG=`"$log`""
     if ($Destination) { $arguments += "/DIR=`"$Destination`"" }
-    (Start-Process $setup -ArgumentList $arguments -Wait -PassThru -WindowStyle Hidden).ExitCode
+    $code = (Start-Process $setup -ArgumentList $arguments -Wait -PassThru -WindowStyle Hidden).ExitCode
+    if ($code -and (Test-Path $log)) { Write-Host (Get-Content $log -Raw) }
+    return $code
 }
 function Assert-Installed([string]$Destination) {
     $registered = (Get-ItemProperty $key).InstallLocation.TrimEnd('\')
@@ -34,7 +39,10 @@ $settingsHash = (Get-FileHash "$default\Data\settings.dat").Hash
 $journal = 'history-20261103.log'
 [IO.File]::WriteAllBytes("$default\Data\$journal", [byte[]](0..255))
 $journalHash = (Get-FileHash "$default\Data\$journal").Hash
-if (Invoke-Setup $default) { throw 'Same-folder upgrade failed.' }
+if (Invoke-Setup $default) {
+    & $guard --prepare $default
+    throw 'Same-folder upgrade failed.'
+}
 if ((Get-FileHash "$default\Data\settings.dat").Hash -ne $settingsHash) { throw 'Same-folder upgrade changed settings.' }
 if (Invoke-Setup $alternate) { throw 'Relocation failed.' }
 Assert-Installed $alternate

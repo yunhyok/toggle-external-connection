@@ -6,7 +6,7 @@
 namespace tec {
 namespace {
 bool fail(std::wstring& error, const std::wstring& path) {
-    error = L"Unsafe installation path: " + path;
+    error = L"Unsafe installation path: " + path + L" (Windows " + std::to_wstring(GetLastError()) + L")";
     return false;
 }
 
@@ -161,7 +161,7 @@ std::wstring installedExe() {
 
 bool protectInstalledFiles(const std::wstring& path, std::wstring& error) {
     if (!trustedInstallPath(path,false,error)) return false;
-    for (const auto name : {L"ToggleExternalConnection.exe",L"TESTING.md",L"check-lab.ps1",L"unins000.exe",L"unins000.dat",L"unins000.msg"}) {
+    for (const auto name : {L"ToggleExternalConnection.exe",L"TESTING.md",L"check-lab.ps1",L"unins000.exe"}) {
         const auto file=path+L"\\"+name;
         if (GetFileAttributesW(file.c_str())!=INVALID_FILE_ATTRIBUTES && !protect(file,false,error)) return false;
     }
