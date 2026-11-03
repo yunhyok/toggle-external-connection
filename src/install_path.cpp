@@ -79,8 +79,12 @@ bool protect(const std::wstring& path, bool directory, std::wstring& error, bool
         L"O:BAG:BAD:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;GRGX;;;BU)",SDDL_REVISION_1,&sd,nullptr)!=FALSE;
     PSID owner=nullptr; PACL acl=nullptr; BOOL present=FALSE,defaulted=FALSE;
     if (ok) ok=GetSecurityDescriptorOwner(sd,&owner,&defaulted) && GetSecurityDescriptorDacl(sd,&present,&acl,&defaulted);
-    if (ok) ok=SetSecurityInfo(file,SE_FILE_OBJECT,OWNER_SECURITY_INFORMATION|DACL_SECURITY_INFORMATION|
-        PROTECTED_DACL_SECURITY_INFORMATION,owner,nullptr,acl,nullptr)==ERROR_SUCCESS;
+    if (ok) {
+        const DWORD code=SetSecurityInfo(file,SE_FILE_OBJECT,OWNER_SECURITY_INFORMATION|DACL_SECURITY_INFORMATION|
+            PROTECTED_DACL_SECURITY_INFORMATION,owner,nullptr,acl,nullptr);
+        ok=code==ERROR_SUCCESS;
+        if (!ok) SetLastError(code);
+    }
     if (sd) LocalFree(sd);
     CloseHandle(file);
     return ok || fail(error,path);
@@ -140,7 +144,8 @@ bool prepareInstallDirectory(const std::wstring& path, std::wstring& error) {
         const auto registered=installedExe();
         const auto previous=registered.substr(0,registered.find_last_of(L'\\'));
         const bool upgrade=end==path.npos && !registered.empty() && _wcsicmp(previous.c_str(),path.c_str())==0;
-        ok=upgrade ? protect(part,true,error) : trustedObject(part,true,end!=path.npos,error);
+        ok=trustedObject(part,true,end!=path.npos,error);
+        if (!ok && upgrade) ok=protect(part,true,error);
         if (ok && exists && end==path.npos && !upgrade) ok=availableTarget(part,error);
         if (end==path.npos) break;
         end=path.find(L'\\',end+1);

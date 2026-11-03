@@ -40,6 +40,8 @@ $journal = 'history-20261103.log'
 [IO.File]::WriteAllBytes("$default\Data\$journal", [byte[]](0..255))
 $journalHash = (Get-FileHash "$default\Data\$journal").Hash
 if (Invoke-Setup $default) {
+    Write-Host "App ACL: $((Get-Acl $default).Sddl)"
+    Write-Host "Identity: $([Security.Principal.WindowsIdentity]::GetCurrent().Name)"
     & $guard --prepare $default
     throw 'Same-folder upgrade failed.'
 }
