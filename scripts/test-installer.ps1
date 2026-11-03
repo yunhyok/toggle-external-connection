@@ -26,12 +26,19 @@ function Assert-Installed([string]$Destination) {
     & $guard --check "$Destination\ToggleExternalConnection.exe"
     if ($LASTEXITCODE) { throw 'Installed executable is not protected.' }
 }
+function Assert-Wizard([string]$Destination, [string]$Language) {
+    & powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$PSScriptRoot/test-installer-wizard.ps1" `
+        -Setup $setup -ExpectedDirectory $Destination -Mode /NORESTART -Language $Language
+    if ($LASTEXITCODE) { throw 'Interactive destination editor verification failed.' }
+}
 if ($Target -eq 'Win7') {
     if (!(Invoke-Setup $alternate) -or (Test-Path $key) -or (Test-Path "$alternate\ToggleExternalConnection.exe")) { throw 'Legacy installer accepted the wrong OS.' }
     return
 }
+Assert-Wizard $default english
 if (Invoke-Setup '') { throw 'Default installation failed.' }
 Assert-Installed $default
+Assert-Wizard $default korean
 & $tests --ci-install-path
 if ($LASTEXITCODE) { throw 'Installed settings test failed.' }
 $settingsHash = (Get-FileHash "$default\Data\settings.dat").Hash
