@@ -27,7 +27,7 @@ function Assert-Installed([string]$Destination) {
     if ($LASTEXITCODE) { throw 'Installed executable is not protected.' }
 }
 function Assert-Wizard([string]$Destination, [string]$Language) {
-    & powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$PSScriptRoot/test-installer-wizard.ps1" `
+    & pwsh.exe -NoProfile -ExecutionPolicy Bypass -File "$PSScriptRoot/test-installer-wizard.ps1" `
         -Setup $setup -ExpectedDirectory $Destination -Mode /NORESTART -Language $Language
     if ($LASTEXITCODE) { throw 'Interactive destination editor verification failed.' }
 }
