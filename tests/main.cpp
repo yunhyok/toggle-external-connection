@@ -34,6 +34,9 @@ static void testSettings() {
     check(GetTempPathW(MAX_PATH,tmp) && GetTempFileNameW(tmp,L"tec",0,path), "temporary path");
     check(DeleteFileW(path) && CreateDirectoryW(path,nullptr), "temporary directory");
     const std::wstring dir(path);
+    check(!tec::trustedInstallPath(dir,false,error), "user-controlled directory cannot host an elevated app");
+    for (const auto invalidPath : {L"D:\\",L"relative\\app.exe",L"\\\\server\\share\\app.exe",L"D:\\Apps\\..\\app.exe",L"D:\\Apps\\trailing.\\app.exe"})
+        check(!tec::trustedInstallPath(invalidPath,true,error), "unsafe installation path rejected");
     check(tec::saveSettings(dir,config,error), "write configuration");
     tec::Settings loaded;
     check(!tec::saveSettings(dir,invalid,error) && tec::loadSettings(dir,loaded,error) &&
@@ -52,6 +55,20 @@ int main(int argc, char** argv) {
         if (argc == 2 && std::strcmp(argv[1], "--ci-wfp-probe") == 0) {
             testWfpProbe();
             std::puts("PASS: test process TCP and UDP denial events matched the destination and application.");
+            return 0;
+        }
+        if (argc == 2 && std::strcmp(argv[1], "--ci-install-path") == 0) {
+            // Installer smoke tests only: no engine or network policy is opened.
+            std::wstring error;
+            const auto exe=tec::installedExe();
+            check(!exe.empty() && tec::trustedInstallPath(exe,true,error), "registered executable is protected");
+            const auto dir=tec::storageDir(error);
+            check(dir==exe.substr(0,exe.find_last_of(L'\\'))+L"\\Data", "storage follows registered installation");
+            tec::Settings config{L"{FE379A83-E678-405B-8581-6E2E7CAAA280}",{L"192.0.2.0/24"},{}};
+            check(tec::saveSettings(dir,config,error), "settings in selected directory");
+            tec::Settings loaded;
+            check(tec::loadSettings(dir,loaded,error) && loaded.guid==config.guid, "reload selected-directory settings");
+            std::puts("PASS: protected registered executable and installation-local settings.");
             return 0;
         }
         if (argc != 1) return 2;

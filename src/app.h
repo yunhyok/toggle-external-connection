@@ -46,6 +46,11 @@ bool validate(const Settings& settings, std::wstring& error);
 // Empty on failure. Production only. Tests and previews never use this directory.
 std::wstring storageDir(std::wstring& error);
 std::wstring installedExe();
+// Reject paths that an unelevated account can replace before elevation.
+bool trustedInstallPath(const std::wstring& path, bool executable, std::wstring& error);
+bool prepareInstallDirectory(const std::wstring& path, std::wstring& error);
+bool protectInstalledFiles(const std::wstring& path, std::wstring& error);
+bool migrateInstallData(const std::wstring& path, std::wstring& error);
 bool loadSettings(const std::wstring& dir, Settings& settings, std::wstring& error);
 bool saveSettings(const std::wstring& dir, const Settings& settings, std::wstring& error);
 

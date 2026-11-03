@@ -1,7 +1,7 @@
 #include "app.h"
 #include <ws2tcpip.h>
 #include <iphlpapi.h>
-#include <shlobj.h>
+#include <objbase.h>
 #include <sddl.h>
 #include <algorithm>
 #include <cstring>
@@ -114,13 +114,6 @@ bool validate(const Settings& value, std::wstring& error) {
     return true;
 }
 
-std::wstring installedExe() {
-    PWSTR path = nullptr;
-    if (FAILED(SHGetKnownFolderPath(FOLDERID_ProgramFilesX64, 0, nullptr, &path))) return {};
-    std::wstring result(path); CoTaskMemFree(path);
-    return result + L"\\Toggle External Connection\\ToggleExternalConnection.exe";
-}
-
 std::wstring storageDir(std::wstring& error) {
     auto path = installedExe(); error.clear();
     if (path.empty()) { error = L"설치 경로를 찾을 수 없습니다."; return {}; }
@@ -128,7 +121,7 @@ std::wstring storageDir(std::wstring& error) {
     path = parent + L"\\Data";
     PSECURITY_DESCRIPTOR sd = nullptr;
     if (!ConvertStringSecurityDescriptorToSecurityDescriptorW(
-        L"D:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)", SDDL_REVISION_1, &sd, nullptr)) {
+        L"O:BAG:BAD:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)", SDDL_REVISION_1, &sd, nullptr)) {
         error = message(L"저장 권한을 구성하지 못했습니다.", GetLastError()); return {};
     }
     SECURITY_ATTRIBUTES sa{sizeof(sa), sd, FALSE};

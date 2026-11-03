@@ -650,6 +650,8 @@ bool isTrustedExecutable() {
     if(!GetModuleFileNameW(nullptr,module,32768)) return false;
     const std::wstring expected=tec::installedExe();
     if(expected.empty()) return false;
+    std::wstring error;
+    if(!tec::trustedInstallPath(expected,true,error)) return false;
     HANDLE file=CreateFileW(module,FILE_READ_ATTRIBUTES,FILE_SHARE_READ|FILE_SHARE_WRITE|FILE_SHARE_DELETE,nullptr,OPEN_EXISTING,FILE_ATTRIBUTE_NORMAL,nullptr);
     if(file==INVALID_HANDLE_VALUE) return false;
     wchar_t resolved[32768]{}; const DWORD length=GetFinalPathNameByHandleW(file,resolved,32768,FILE_NAME_NORMALIZED); CloseHandle(file);

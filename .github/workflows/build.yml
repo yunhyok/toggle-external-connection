@@ -37,21 +37,9 @@ jobs:
           $iscc = Join-Path $dest 'ISCC.exe'
           & $iscc "/DTarget=${{ matrix.target }}" packaging\setup.iss
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
-      - name: Check installer OS guard, installation and removal
+      - name: Check installer destinations, relocation, data preservation and removal
         shell: pwsh
-        run: |
-          $setup = (Get-ChildItem dist/*.exe).FullName
-          $dest = Join-Path $env:ProgramFiles 'Toggle External Connection'
-          $silent = '/SP-','/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART'
-          $run = Start-Process $setup -ArgumentList $silent -Wait -PassThru -WindowStyle Hidden
-          if ('${{ matrix.target }}' -eq 'Win7') {
-            if (!$run.ExitCode -or (Test-Path "$dest\ToggleExternalConnection.exe")) { throw 'Legacy installer accepted the wrong OS' }
-          } else {
-            if ($run.ExitCode -or !(Test-Path "$dest\ToggleExternalConnection.exe") -or !(Test-Path "$dest\check-lab.ps1")) { throw 'Installation failed' }
-            $uninstaller = (Get-ChildItem "$dest\unins*.exe").FullName
-            $run = Start-Process $uninstaller -ArgumentList $silent -Wait -PassThru -WindowStyle Hidden
-            if ($run.ExitCode -or (Test-Path "$dest\ToggleExternalConnection.exe")) { throw 'Uninstall failed' }
-          }
+        run: .\scripts\test-installer.ps1 -Target ${{ matrix.target }}
       - uses: actions/upload-artifact@v4
         with:
           name: installer-${{ matrix.target }}-x64
