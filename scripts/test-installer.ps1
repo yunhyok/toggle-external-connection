@@ -42,6 +42,8 @@ $journalHash = (Get-FileHash "$default\Data\$journal").Hash
 if (Invoke-Setup $default) {
     Write-Host "App ACL: $((Get-Acl $default).Sddl)"
     Write-Host "Identity: $([Security.Principal.WindowsIdentity]::GetCurrent().Name)"
+    Write-Host "Executable ACL: $((Get-Acl "$default\ToggleExternalConnection.exe").Sddl)"
+    Write-Host "Executable attributes: $((Get-Item "$default\ToggleExternalConnection.exe").Attributes)"
     & $guard --prepare $default
     throw 'Same-folder upgrade failed.'
 }

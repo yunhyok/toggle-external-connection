@@ -67,12 +67,20 @@ bool trustedObject(const std::wstring& path, bool directory, bool parent, std::w
 }
 
 bool protect(const std::wstring& path, bool directory, std::wstring& error, bool privateData=false) {
-    HANDLE file=CreateFileW(path.c_str(),WRITE_DAC|WRITE_OWNER|FILE_READ_ATTRIBUTES,
+    HANDLE file=CreateFileW(path.c_str(),READ_CONTROL|WRITE_DAC|WRITE_OWNER|FILE_READ_ATTRIBUTES,
         FILE_SHARE_READ,nullptr,OPEN_EXISTING,FILE_FLAG_OPEN_REPARSE_POINT|FILE_FLAG_BACKUP_SEMANTICS,nullptr);
     if (file==INVALID_HANDLE_VALUE) return fail(error,path);
     BY_HANDLE_FILE_INFORMATION info{};
     bool ok=GetFileInformationByHandle(file,&info) && !(info.dwFileAttributes&FILE_ATTRIBUTE_REPARSE_POINT) &&
         !!(info.dwFileAttributes&FILE_ATTRIBUTE_DIRECTORY)==directory && (directory || info.nNumberOfLinks==1);
+    if (!ok) {
+        CloseHandle(file);
+        return fail(error,path+L" [attributes/links="+std::to_wstring(info.nNumberOfLinks)+L"]");
+    }
+    PSID currentOwner=nullptr; PSECURITY_DESCRIPTOR current=nullptr;
+    const DWORD ownerCode=GetSecurityInfo(file,SE_FILE_OBJECT,OWNER_SECURITY_INFORMATION,&currentOwner,nullptr,nullptr,nullptr,&current);
+    const bool changeOwner=ownerCode!=ERROR_SUCCESS || !trustedSid(currentOwner);
+    if (current) LocalFree(current);
     PSECURITY_DESCRIPTOR sd=nullptr;
     if (ok) ok=ConvertStringSecurityDescriptorToSecurityDescriptorW(privateData ?
         L"O:BAG:BAD:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)" :
@@ -80,8 +88,8 @@ bool protect(const std::wstring& path, bool directory, std::wstring& error, bool
     PSID owner=nullptr; PACL acl=nullptr; BOOL present=FALSE,defaulted=FALSE;
     if (ok) ok=GetSecurityDescriptorOwner(sd,&owner,&defaulted) && GetSecurityDescriptorDacl(sd,&present,&acl,&defaulted);
     if (ok) {
-        const DWORD code=SetSecurityInfo(file,SE_FILE_OBJECT,OWNER_SECURITY_INFORMATION|DACL_SECURITY_INFORMATION|
-            PROTECTED_DACL_SECURITY_INFORMATION,owner,nullptr,acl,nullptr);
+        const DWORD code=SetSecurityInfo(file,SE_FILE_OBJECT,(changeOwner ? OWNER_SECURITY_INFORMATION : 0)|DACL_SECURITY_INFORMATION|
+            PROTECTED_DACL_SECURITY_INFORMATION,changeOwner ? owner : nullptr,nullptr,acl,nullptr);
         ok=code==ERROR_SUCCESS;
         if (!ok) SetLastError(code);
     }
@@ -168,7 +176,8 @@ bool protectInstalledFiles(const std::wstring& path, std::wstring& error) {
     if (!trustedInstallPath(path,false,error)) return false;
     for (const auto name : {L"ToggleExternalConnection.exe",L"TESTING.md",L"check-lab.ps1",L"unins000.exe"}) {
         const auto file=path+L"\\"+name;
-        if (GetFileAttributesW(file.c_str())!=INVALID_FILE_ATTRIBUTES && !protect(file,false,error)) return false;
+        if (GetFileAttributesW(file.c_str())!=INVALID_FILE_ATTRIBUTES &&
+            !trustedInstallPath(file,true,error) && !protect(file,false,error)) return false;
     }
     return true;
 }
