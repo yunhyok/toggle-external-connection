@@ -1,5 +1,6 @@
 #include "app.h"
 #include <commctrl.h>
+#include <commdlg.h>
 #include <uxtheme.h>
 #include <shellapi.h>
 #include <shlobj.h>
@@ -19,7 +20,7 @@ constexpr UINT trayMessage = WM_APP + 1;
 constexpr UINT timerRefresh = 1, timerClick = 2;
 enum { navSettings = 1001, navHistory, toggleButton, adapterCombo, networkEdit,
        dnsEdit, saveButton, appFilter, ipFilter, historyList,
-       selectedPath, refreshButton, firstDev, lastDev=firstDev+4, googleOption, webCommand, exitCommand = 1100 };
+       selectedPath, refreshButton, firstDev, lastDev=firstDev+4, googleOption, webCommand, exportCsvButton, exitCommand = 1100 };
 const wchar_t* devNames[]={L"Codex",L"Claude",L"Antigravity",L"Git · gh",L"GitHub 웹"};
 HINSTANCE instance;
 UINT taskbarCreated;
@@ -57,20 +58,6 @@ std::wstring lower(std::wstring value) {
     return value;
 }
 
-std::wstring leaf(const std::wstring& path) {
-    const auto slash = path.find_last_of(L"\\/");
-    return slash == std::wstring::npos ? path : path.substr(slash + 1);
-}
-
-std::wstring stamp(FILETIME time) {
-    FILETIME local{}; SYSTEMTIME date{};
-    if (!FileTimeToLocalFileTime(&time, &local) || !FileTimeToSystemTime(&local, &date)) return L"—";
-    wchar_t value[40];
-    swprintf_s(value, L"%04u-%02u-%02u %02u:%02u:%02u", date.wYear, date.wMonth, date.wDay,
-               date.wHour, date.wMinute, date.wSecond);
-    return value;
-}
-
 struct Ui {
     HWND window{}, settingsPane{}, historyPane{}, adaptersControl{}, networks{}, dns{}, metadata{},
          save{}, toggle{}, settingsNav{}, historyNav{}, logControl{}, list{}, appSearch{}, ipSearch{}, path{};
@@ -78,6 +65,7 @@ struct Ui {
     HWND dev[5]{}, googleLogin{};
     std::vector<tec::Adapter> adapters;
     std::vector<tec::Row> visibleRows;
+    std::wstring exportNotice;
     tec::Settings saved;
     tec::Engine engine;
     std::future<std::pair<unsigned,bool>> healthCheck;
@@ -289,13 +277,14 @@ struct Ui {
             const auto application=row.first.path.empty() ? L"프로그램 미확인" : row.first.path;
             return lower(application).find(app) == std::wstring::npos || lower(row.first.ip).find(ip) == std::wstring::npos;
         }), visibleRows.end());
+        EnableWindow(GetDlgItem(historyPane,exportCsvButton),!preview && !visibleRows.empty());
         SendMessageW(list, WM_SETREDRAW, FALSE, 0);
         ListView_DeleteAllItems(list);
         for (size_t i = 0; i < visibleRows.size(); ++i) {
             const auto& r = visibleRows[i];
-            std::wstring values[] = {stamp(r.first.time), stamp(r.last), std::to_wstring(r.count), r.first.path.empty() ? L"프로그램 미확인" : leaf(r.first.path),
+            std::wstring values[] = {tec::historyTime(r.first.time), tec::historyTime(r.last), std::to_wstring(r.count), tec::historyProgram(r.first.path),
                 r.first.ip + (r.first.port < 0 ? L"" : L":" + std::to_wstring(r.first.port)),
-                r.first.protocol == 6 ? L"TCP" : r.first.protocol == 17 ? L"UDP" : std::to_wstring(r.first.protocol), r.hint};
+                tec::historyProtocol(r.first.protocol), r.hint};
             if (r.first.ip.find(L':') != std::wstring::npos && r.first.port >= 0)
                 values[4] = L"[" + r.first.ip + L"]:" + std::to_wstring(r.first.port);
             LVITEMW item{}; item.mask = LVIF_TEXT; item.iItem = static_cast<int>(i); item.pszText = &values[0][0];
@@ -306,6 +295,38 @@ struct Ui {
         }
         SendMessageW(list, WM_SETREDRAW, TRUE, 0); InvalidateRect(list, nullptr, TRUE);
         if (ListView_GetNextItem(list, -1, LVNI_SELECTED) < 0) SetWindowTextW(path, L"");
+    }
+    void exportHistory() {
+        if (preview || visibleRows.empty()) return;
+        // A modal Save As dialog still dispatches the timer that refreshes visibleRows.
+        const auto snapshot=visibleRows;
+        SYSTEMTIME now{}; GetLocalTime(&now);
+        wchar_t file[32768]{};
+        swprintf_s(file,L"차단기록-%04u%02u%02u-%02u%02u%02u.csv",now.wYear,now.wMonth,now.wDay,now.wHour,now.wMinute,now.wSecond);
+        PWSTR documents=nullptr;
+        SHGetKnownFolderPath(FOLDERID_Documents,0,nullptr,&documents);
+        OPENFILENAMEW dialog{};
+        dialog.lStructSize=sizeof(dialog); dialog.hwndOwner=window;
+        dialog.lpstrTitle=L"현재 차단 기록을 CSV로 저장";
+        dialog.lpstrFile=file; dialog.nMaxFile=_countof(file);
+        dialog.lpstrFilter=L"CSV 파일 (*.csv)\0*.csv\0"; dialog.lpstrDefExt=L"csv";
+        dialog.lpstrInitialDir=documents;
+        dialog.Flags=OFN_EXPLORER|OFN_PATHMUSTEXIST|OFN_NOCHANGEDIR|OFN_OVERWRITEPROMPT|OFN_DONTADDTORECENT|OFN_NOTESTFILECREATE;
+        const BOOL picked=GetSaveFileNameW(&dialog);
+        const DWORD dialogError=picked ? 0 : CommDlgExtendedError();
+        CoTaskMemFree(documents);
+        if (!picked) {
+            if (dialogError) failure(L"파일 저장 창을 열지 못했습니다. (Windows "+std::to_wstring(dialogError)+L")");
+            return;
+        }
+        const DWORD error=tec::saveHistoryCsv(file,snapshot);
+        if (error) {
+            if (error==ERROR_INVALID_NAME) failure(L"파일 이름의 확장자를 .csv로 지정하세요.");
+            else failure(L"CSV를 저장하지 못했습니다. 파일이 열려 있는지, 저장 위치에 쓸 수 있는지 확인하세요. (Windows "+std::to_wstring(error)+L")");
+            return;
+        }
+        exportNotice=L"CSV 저장 완료 · "+std::to_wstring(snapshot.size())+L"행 · "+(file+dialog.nFileOffset);
+        InvalidateRect(window,nullptr,FALSE);
     }
     void show(bool historyView) {
         historyMode = historyView;
@@ -373,10 +394,13 @@ struct Ui {
         RECT hr{}; GetClientRect(historyPane,&hr); const int hw=MulDiv(hr.right,96,dpi), hh=MulDiv(hr.bottom,96,dpi);
         const bool compact=hh<220;
         const int filterTop=compact ? 31 : 43, listTop=compact ? 72 : 90;
-        place(GetDlgItem(historyPane,2001),18,compact ? 8 : 16,200,22);
-        place(GetDlgItem(historyPane,2002),hw/2,compact ? 8 : 16,180,22);
-        place(appSearch,18,filterTop,hw/2-36,compact ? 28 : 31); place(ipSearch,hw/2,filterTop,hw/2-130,compact ? 28 : 31);
-        place(GetDlgItem(historyPane,refreshButton),hw-112,filterTop,94,compact ? 28 : 31);
+        const int filterWidth=std::max(45,(hw-238)/2);
+        const int ipLeft=18+filterWidth+12, filterHeight=compact ? 28 : 31;
+        place(GetDlgItem(historyPane,2001),18,compact ? 8 : 16,filterWidth,22);
+        place(GetDlgItem(historyPane,2002),ipLeft,compact ? 8 : 16,filterWidth,22);
+        place(appSearch,18,filterTop,filterWidth,filterHeight); place(ipSearch,ipLeft,filterTop,filterWidth,filterHeight);
+        place(GetDlgItem(historyPane,refreshButton),hw-202,filterTop,84,filterHeight);
+        place(GetDlgItem(historyPane,exportCsvButton),hw-110,filterTop,92,filterHeight);
         const bool showPathLabel=hh>=230;
         ShowWindow(GetDlgItem(historyPane,2003),showPathLabel ? SW_SHOW : SW_HIDE);
         place(list,18,listTop,hw-36,std::max(20,hh-listTop-(showPathLabel ? 89 : 61)));
@@ -507,6 +531,7 @@ void createControls() {
     ui->appSearch=ui->control(ui->historyPane,L"EDIT",L"",WS_TABSTOP|ES_AUTOHSCROLL,appFilter,WS_EX_CLIENTEDGE);
     ui->ipSearch=ui->control(ui->historyPane,L"EDIT",L"",WS_TABSTOP|ES_AUTOHSCROLL,ipFilter,WS_EX_CLIENTEDGE);
     ui->control(ui->historyPane,L"BUTTON",L"새로 고침",BS_OWNERDRAW|WS_TABSTOP,refreshButton);
+    ui->control(ui->historyPane,L"BUTTON",L"CSV 저장",BS_OWNERDRAW|WS_TABSTOP,exportCsvButton);
     ui->list=ui->control(ui->historyPane,WC_LISTVIEWW,L"",LVS_REPORT|LVS_SHOWSELALWAYS|LVS_SINGLESEL|WS_TABSTOP,historyList,WS_EX_CLIENTEDGE);
     ListView_SetExtendedListViewStyle(ui->list,LVS_EX_FULLROWSELECT|LVS_EX_DOUBLEBUFFER);
     ListView_SetBkColor(ui->list,editor); ListView_SetTextBkColor(ui->list,editor); ListView_SetTextColor(ui->list,foreground);
@@ -535,7 +560,7 @@ void paintWindow(HWND hwnd) {
     DrawTextW(dc,detail.c_str(),-1,&description,DT_SINGLELINE|DT_END_ELLIPSIS);
     RECT footer{ui->s(22),r.bottom-ui->s(30),r.right-ui->s(22),r.bottom-ui->s(6)};
     const std::wstring foot=ui->preview ? L"미리 보기에서는 차단·저장 기능을 사용할 수 없습니다." :
-        ui->historyMode ? L"차단 시도 기록 · 이름은 참고 정보입니다" : L"닫으면 트레이로 숨김 · 종료하면 차단 해제";
+        ui->historyMode ? (ui->exportNotice.empty() ? L"CSV 저장은 현재 검색 결과를 내보냅니다." : ui->exportNotice) : L"닫으면 트레이로 숨김 · 종료하면 차단 해제";
     DrawTextW(dc,foot.c_str(),-1,&footer,DT_SINGLELINE|DT_END_ELLIPSIS);
     EndPaint(hwnd,&ps);
 }
@@ -588,6 +613,7 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wp, LPARAM lp) {
         case appFilter: case ipFilter:
             if(HIWORD(wp)==EN_CHANGE) ui->refreshHistory(); return 0;
         case refreshButton: ui->refreshHistory(); return 0;
+        case exportCsvButton: ui->exportHistory(); return 0;
         case webCommand: {
             PWSTR programs=nullptr;
             if (FAILED(SHGetKnownFolderPath(FOLDERID_CommonPrograms,0,nullptr,&programs))) return 0;

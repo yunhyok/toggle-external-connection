@@ -6,7 +6,7 @@
 [Setup]
 AppId={{CA78C24A-7964-4F3A-8F40-DA64E9D82A11}
 AppName={#Product}
-AppVersion=0.2.0
+AppVersion=0.3.0
 AppPublisher=yunhyok
 AppPublisherURL=https://github.com/yunhyok/toggle-external-connection
 DefaultDirName={commonpf64}\{#Product}

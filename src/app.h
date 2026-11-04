@@ -42,6 +42,10 @@ struct Row {
     unsigned long long count = 0;
     std::wstring hint;
 };
+std::wstring historyTime(FILETIME time);
+std::wstring historyProgram(const std::wstring& path);
+std::wstring historyProtocol(int protocol);
+DWORD saveHistoryCsv(const std::wstring& destination, const std::vector<Row>& rows);
 
 bool parsePrefix(const std::wstring& text, int& family, std::array<unsigned char,16>& bytes, unsigned& bits);
 bool expandNetworks(const std::vector<std::wstring>& input, std::vector<std::wstring>& output, std::wstring& error);

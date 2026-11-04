@@ -1,5 +1,8 @@
 #include "../src/app.h"
 #include <algorithm>
+#include <fstream>
+#include <iterator>
+#include <filesystem>
 #include <stdexcept>
 
 namespace {
@@ -26,10 +29,42 @@ struct Folder {
         RemoveDirectoryW(path.c_str());
     }
 };
+
+void testHistoryCsv(const std::wstring& dir) {
+    const auto file=dir+L"\\내보내기.csv";
+    SYSTEMTIME local{2026,11,0,4,13,20,0,0};
+    FILETIME localFile{},first{};
+    require(SystemTimeToFileTime(&local,&localFile) && LocalFileTimeToFileTime(&localFile,&first),"CSV local clock fixture");
+    tec::Row row{{first,L"C:\\실행,폴더\\=report.exe",L"2001:db8::1",443,6},plusSeconds(first,7),3,L"a,\"b\"\r\nc"};
+    const auto read=[&]() {
+        std::ifstream in(std::filesystem::path(file),std::ios::binary);
+        return std::string(std::istreambuf_iterator<char>(in),{});
+    };
+    // Start with an existing longer export; replacing it must not leave trailing bytes.
+    require(tec::saveHistoryCsv(file,{row,row,row})==0,"create CSV");
+    tec::Row unknown{{first,L"",L"198.51.100.4",-1,-1},first,1,L"  @example"};
+    require(tec::saveHistoryCsv(file,{row,unknown})==0,"replace CSV");
+    const std::string expected=std::string("\xEF\xBB\xBF",3)+u8"최초 시각,최근 시각,관측 횟수,프로그램,실행 파일 전체 경로,목적지 IP,목적지 포트,프로토콜,참고 호스트명\r\n"
+        u8"\"2026-11-04 13:20:00\",\"2026-11-04 13:20:07\",\"3\",\"'=report.exe\",\"C:\\실행,폴더\\=report.exe\",\"2001:db8::1\",\"443\",\"TCP\",\"a,\"\"b\"\"\r\nc\"\r\n"
+        u8"\"2026-11-04 13:20:00\",\"2026-11-04 13:20:00\",\"1\",\"프로그램 미확인\",\"\",\"198.51.100.4\",\"\",\"\",\"'  @example\"\r\n";
+    require(read()==expected,"CSV bytes: UTF-8 BOM, Korean, local times, escaped fields, IPv6, missing values and formulas");
+    HANDLE busy=CreateFileW(file.c_str(),GENERIC_READ,FILE_SHARE_READ,nullptr,OPEN_EXISTING,FILE_ATTRIBUTE_NORMAL,nullptr);
+    require(busy!=INVALID_HANDLE_VALUE,"lock export");
+    auto error=tec::saveHistoryCsv(file,{unknown});
+    CloseHandle(busy);
+    require(error && read()==expected,"in-use destination is preserved");
+    unknown.hint.assign(1,static_cast<wchar_t>(0xd800));
+    require(tec::saveHistoryCsv(file,{row,unknown})==ERROR_NO_UNICODE_TRANSLATION && read()==expected,"partial export never replaces original");
+    WIN32_FIND_DATAW entry{};
+    auto leftover=FindFirstFileW((dir+L"\\.tec-*.tmp").c_str(),&entry);
+    if (leftover!=INVALID_HANDLE_VALUE) FindClose(leftover);
+    require(leftover==INVALID_HANDLE_VALUE,"failed export removes its staging file");
+}
 }
 
 void testHistory() {
     Folder folder;
+    testHistoryCsv(folder.path);
     SYSTEMTIME local{}; GetLocalTime(&local);
     local.wHour = 12; local.wMinute = local.wSecond = local.wMilliseconds = 0;
     FILETIME localTime{}, base{};
