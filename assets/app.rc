@@ -3,8 +3,8 @@
 102 ICON "blocked.ico"
 1 RT_MANIFEST "app.manifest"
 1 VERSIONINFO
- FILEVERSION 0,2,0,1
- PRODUCTVERSION 0,2,0,1
+ FILEVERSION 0,2,0,2
+ PRODUCTVERSION 0,2,0,2
  FILEFLAGSMASK 0x3fL
  FILEFLAGS VS_FF_PRERELEASE
  FILEOS VOS_NT_WINDOWS32
@@ -15,9 +15,9 @@ BEGIN
     BLOCK "040904b0"
     BEGIN
       VALUE "FileDescription", "Toggle External Connection"
-      VALUE "FileVersion", "0.2.0-rc.1"
+      VALUE "FileVersion", "0.2.0-rc.2"
       VALUE "ProductName", "Toggle External Connection"
-      VALUE "ProductVersion", "0.2.0-rc.1"
+      VALUE "ProductVersion", "0.2.0-rc.2"
       VALUE "OriginalFilename", "ToggleExternalConnection.exe"
     END
   END

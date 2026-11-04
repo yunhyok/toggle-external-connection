@@ -1,6 +1,7 @@
 #include "app.h"
 #include <ws2tcpip.h>
 #include <shlobj.h>
+#include <shellapi.h>
 #include <algorithm>
 #include <atomic>
 #include <chrono>
@@ -97,25 +98,27 @@ void tunnel(SOCKET client,const std::atomic<bool>& stopping) {
         }
     }
 }
-std::wstring browserExe() {
-    // Use the installed browser under Program Files. The elevated tray never starts a browser directly.
-    for(auto folder : {FOLDERID_ProgramFilesX64,FOLDERID_ProgramFilesX86}) {
-        PWSTR path=nullptr;
-        if(FAILED(SHGetKnownFolderPath(folder,0,nullptr,&path))) continue;
-        std::wstring root(path); CoTaskMemFree(path);
-        for(auto rel : {L"\\Microsoft\\Edge\\Application\\msedge.exe",L"\\Google\\Chrome\\Application\\chrome.exe"}) {
-            auto exe=root+rel;
-            if(GetFileAttributesW(exe.c_str())!=INVALID_FILE_ATTRIBUTES) return exe;
-        }
-    }
-    return {};
+std::wstring miniBrowserExe() {
+    wchar_t command[32768]{};
+    DWORD bytes=sizeof(command);
+    if(RegGetValueW(HKEY_CURRENT_USER,L"Software\\Classes\\MiniBrowser.URL\\shell\\open\\command",
+                    nullptr,RRF_RT_REG_SZ,nullptr,command,&bytes)!=ERROR_SUCCESS) return {};
+    int argc=0; LPWSTR* argv=CommandLineToArgvW(command,&argc);
+    if(!argv) return {};
+    std::wstring exe=argc ? argv[0] : L"";
+    LocalFree(argv);
+    const auto slash=exe.rfind(L'\\');
+    if(exe.size()<4 || exe[1]!=L':' || exe[2]!=L'\\' || slash==exe.npos ||
+       _wcsicmp(exe.c_str()+slash+1,L"MiniBrowser.exe")!=0) return {};
+    const auto attr=GetFileAttributesW(exe.c_str());
+    return attr!=INVALID_FILE_ATTRIBUTES && !(attr&FILE_ATTRIBUTE_DIRECTORY) ? exe : L"";
 }
 int notify(const wchar_t* text) {MessageBoxW(nullptr,text,L"GitHub 웹",MB_OK|MB_ICONINFORMATION);return 1;}
 }
 int githubWindow() {
     if(IsUserAnAdmin()) return notify(L"GitHub 웹은 일반 사용자로 시작 메뉴에서 여세요.");
-    auto browser=browserExe();
-    if(browser.empty()) return notify(L"GitHub 전용 창을 열려면 Microsoft Edge 또는 Google Chrome 데스크톱 브라우저가 필요합니다.");
+    auto browser=miniBrowserExe();
+    if(browser.empty()) return notify(L"GitHub 웹에 사용할 MiniBrowser를 찾을 수 없습니다. 현재 사용자 계정에 MiniBrowser 0.2.4 설치본을 설치한 뒤 다시 여세요.");
     HANDLE one=CreateMutexW(nullptr,FALSE,L"Local\\TEC.GitHubBrowser");
     if(!one || GetLastError()==ERROR_ALREADY_EXISTS) {if(one) CloseHandle(one);return notify(L"이미 열린 GitHub 전용 창을 사용하세요.");}
     struct Mutex {HANDLE h;~Mutex(){CloseHandle(h);}} mutex{one};
@@ -128,14 +131,19 @@ int githubWindow() {
        bind(listener.s,reinterpret_cast<sockaddr*>(&address),len)!=0 || listen(listener.s,SOMAXCONN)!=0 ||
        getsockname(listener.s,reinterpret_cast<sockaddr*>(&address),&len)!=0) return notify(L"로컬 GitHub 연결을 열 수 없습니다.");
     PWSTR local=nullptr; if(FAILED(SHGetKnownFolderPath(FOLDERID_LocalAppData,0,nullptr,&local))) return 1;
-    std::wstring profile=std::wstring(local)+L"\\Toggle External Connection\\GitHubBrowser"; CoTaskMemFree(local);
-    std::wstring cmd=L"\""+browser+L"\" --user-data-dir=\""+profile+
-        L"\" --no-first-run --no-default-browser-check --disable-background-mode --disable-quic --proxy-bypass-list=\"<-loopback>\" --proxy-server=http://127.0.0.1:"+
-        std::to_wstring(ntohs(address.sin_port))+L" --new-window https://github.com/";
+    std::wstring profile=std::wstring(local)+L"\\Toggle External Connection\\GitHubMiniBrowser"; CoTaskMemFree(local);
+    // This helper is a separate, unelevated process. MiniBrowser keys both its profile and its single-instance pipe by LOCALAPPDATA.
+    const auto flags=L"--disable-quic --proxy-bypass-list=<-loopback> --proxy-server=http://127.0.0.1:"+std::to_wstring(ntohs(address.sin_port));
+    if(!SetEnvironmentVariableW(L"LOCALAPPDATA",profile.c_str()) ||
+       !SetEnvironmentVariableW(L"QTWEBENGINE_CHROMIUM_FLAGS",flags.c_str()))
+        return notify(L"MiniBrowser 전용 프로필 또는 중계를 설정할 수 없습니다.");
+    std::wstring cmd=L"\""+browser+L"\" --open-url https://github.com/";
     STARTUPINFOW startup{sizeof(startup)}; PROCESS_INFORMATION proc{};
-    if(!CreateProcessW(browser.c_str(),&cmd[0],nullptr,nullptr,FALSE,0,nullptr,nullptr,&startup,&proc)) return notify(L"브라우저를 시작할 수 없습니다.");
+    const auto workingDir=browser.substr(0,browser.rfind(L'\\'));
+    if(!CreateProcessW(browser.c_str(),&cmd[0],nullptr,nullptr,FALSE,0,nullptr,workingDir.c_str(),&startup,&proc)) return notify(L"MiniBrowser를 시작할 수 없습니다.");
     CloseHandle(proc.hThread);
     std::atomic<bool> stopping{false};
+    bool connected=false;
     std::vector<std::future<void>> workers;
     workers.reserve(64);
     while(WaitForSingleObject(proc.hProcess,0)==WAIT_TIMEOUT) {
@@ -143,11 +151,15 @@ int githubWindow() {
         fd_set incoming; FD_ZERO(&incoming); FD_SET(listener.s,&incoming); timeval tv{0,200000};
         if(select(0,&incoming,nullptr,nullptr,&tv)<=0) continue;
         SOCKET client=accept(listener.s,nullptr,nullptr); if(client==INVALID_SOCKET) continue;
+        connected=true;
         if(workers.size()>=64) {closesocket(client);continue;}
         try {workers.push_back(std::async(std::launch::async,tunnel,client,std::cref(stopping)));}
         catch(...) {closesocket(client);}
     }
+    DWORD exitCode=0; GetExitCodeProcess(proc.hProcess,&exitCode);
     stopping=true; CloseHandle(proc.hProcess);
+    if(!connected && (exitCode!=0 || GetFileAttributesW((profile+L"\\MiniBrowser\\instance.lock").c_str())!=INVALID_FILE_ATTRIBUTES))
+        return notify(L"새 중계에 연결되지 않았습니다. 기존 GitHub 전용 창을 닫은 뒤 다시 여세요.");
     return 0;
 }
 

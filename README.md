@@ -41,11 +41,11 @@ Windows 트레이에서 외부 인터넷을 차단하고 지정한 인트라넷 
 | Claude | 설치된 Windows 패키지의 Claude 데스크톱 |
 | Antigravity | 기본 사용자 설치의 Antigravity·Antigravity IDE와 전용 언어 서버 |
 | Git · gh | Git for Windows, Git의 HTTPS·SSH·LFS 도구, GitHub CLI, 탐지된 GitHub Desktop |
-| GitHub 웹 | 트레이의 **GitHub 전용 창 열기** 또는 시작 메뉴의 **GitHub Web** |
+| GitHub 웹 | 트레이의 **MiniBrowser에서 GitHub 열기** 또는 시작 메뉴의 **GitHub Web** |
 
 앱 예외는 실행 파일의 **전체 경로**를 기준으로 모든 목적지에 적용. 동일 IP를 사용하는 다른 앱은 계속 차단. Git에 기본 포함된 SSH는 허용되며, 별도 시스템 SSH·터미널·범용 셸까지 허용 범위가 확장되지는 않음. 업데이트로 실행 파일이 교체되면 앱을 연 뒤 차단을 다시 전환할 것. 지명된 경로의 실행 파일은 신뢰할 수 있는 설치본으로 유지할 것.
 
-GitHub 전용 창은 설치된 Edge 또는 Chrome과 별도 로그인 프로필을 사용. GitHub, 정적 파일, 사용자 콘텐츠 도메인(`github.com`, `githubassets.com`, `githubusercontent.com` 및 그 하위 도메인)의 HTTPS만 중계. 외부 SSO·GitHub Pages·임의 외부 링크는 별도 사이트이므로 제한. 업무에 쓰는 DNS 서버는 허용 목록에서 확인할 것.
+GitHub 전용 창은 현재 사용자에게 등록된 [MiniBrowser 0.2.4 설치본](https://github.com/yunhyok/MiniBrowser/releases/tag/v0.2.4)을 사용. 일반 MiniBrowser 창은 계속 사용할 수 있으며, 전용 창에서 처음 한 번 별도로 로그인할 것. MiniBrowser 미설치 시 설치 안내 표시. GitHub, 정적 파일, 사용자 콘텐츠 도메인(`github.com`, `githubassets.com`, `githubusercontent.com` 및 그 하위 도메인)의 HTTPS만 중계. 외부 SSO·GitHub Pages·임의 외부 링크는 별도 사이트이므로 제한. 업무에 쓰는 DNS 서버는 허용 목록에서 확인할 것.
 
 ### 차단 기록
 

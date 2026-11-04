@@ -336,7 +336,7 @@ struct Ui {
         HMENU popup = CreatePopupMenu();
         AppendMenuW(popup, MF_STRING, navSettings, L"설정 열기");
         AppendMenuW(popup, MF_STRING, navHistory, L"차단 기록 보기");
-        AppendMenuW(popup, MF_STRING | ((saved.apps&16) ? 0 : MF_GRAYED), webCommand, L"GitHub 전용 창 열기");
+        AppendMenuW(popup, MF_STRING | ((saved.apps&16) ? 0 : MF_GRAYED), webCommand, L"MiniBrowser에서 GitHub 열기");
         AppendMenuW(popup, MF_SEPARATOR, 0, nullptr);
         AppendMenuW(popup, MF_STRING | (engine.active() || !confirmed ? MF_GRAYED : 0), trialCommand, L"60초 시험 차단");
         AppendMenuW(popup, MF_SEPARATOR, 0, nullptr);
