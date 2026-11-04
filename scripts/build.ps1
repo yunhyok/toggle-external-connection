@@ -17,7 +17,7 @@ try {
     $libs = @('fwpuclnt.lib','rpcrt4.lib','ole32.lib','uuid.lib','user32.lib','shell32.lib',
         'comctl32.lib','gdi32.lib','iphlpapi.lib','ws2_32.lib','dnsapi.lib','advapi32.lib',
         'uxtheme.lib','shlwapi.lib','comdlg32.lib','version.lib')
-    $sources = @("$root/src/settings.cpp","$root/src/engine.cpp","$root/src/history.cpp","$root/src/install_path.cpp")
+    $sources = @("$root/src/settings.cpp","$root/src/engine.cpp","$root/src/history.cpp","$root/src/install_path.cpp","$root/src/networks.cpp","$root/src/devapps.cpp","$root/src/github.cpp")
     Invoke-Checked cl.exe ($flags + @("$root/src/install_path.cpp","$root/src/install_guard.cpp",'/Fe:install-guard.exe',
         '/link',"/SUBSYSTEM:CONSOLE,$sub",'/MACHINE:X64','advapi32.lib','version.lib'))
     Invoke-Checked rc.exe @('/nologo','/I',"$root/assets",'/fo','app.res',"$root/assets/app.rc")

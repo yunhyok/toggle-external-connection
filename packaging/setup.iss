@@ -6,7 +6,7 @@
 [Setup]
 AppId={{CA78C24A-7964-4F3A-8F40-DA64E9D82A11}
 AppName={#Product}
-AppVersion=0.1.0-rc.2
+AppVersion=0.2.0-rc.1
 AppPublisher=yunhyok
 AppPublisherURL=https://github.com/yunhyok/toggle-external-connection
 DefaultDirName={commonpf64}\{#Product}
@@ -45,6 +45,7 @@ Source: "..\docs\TESTING.md"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\scripts\check-lab.ps1"; DestDir: "{app}"; Flags: ignoreversion
 [Icons]
 Name: "{group}\{#Product}"; Filename: "{app}\{#Binary}"
+Name: "{group}\GitHub Web"; Filename: "{app}\{#Binary}"; Parameters: "--github-web"
 [UninstallDelete]
 Type: files; Name: "{app}\Data\history-????????.log"
 Type: files; Name: "{app}\Data\history-????????.log.tmp"

@@ -101,15 +101,16 @@ bool validate(const Settings& value, std::wstring& error) {
     if (value.networks.empty() || value.networks.size() > 128 || value.dns.size() > 32) {
         error = L"허용할 내부 주소를 1~128개, DNS 주소를 32개 이하로 입력하세요."; return false;
     }
-    for (const auto* group : {&value.networks, &value.dns}) {
-        for (const auto& s : *group) {
+    if (value.apps > 31) { error=L"개발 앱 선택값이 잘못되었습니다."; return false; }
+    std::vector<std::wstring> expanded;
+    if (!expandNetworks(value.networks,expanded,error)) return false;
+    for (const auto& s : value.dns) {
             int family; unsigned bits; std::array<unsigned char,16> bytes{};
             if (!parsePrefix(s, family, bytes, bits) || bits == 0 ||
-                (group == &value.dns && bits != (family == AF_INET ? 32u : 128u))) {
+                bits != (family == AF_INET ? 32u : 128u)) {
                 error = L"주소를 확인하세요: " + s + L"\n단일 IP 또는 네트워크 시작 주소/CIDR를 입력하세요. DNS에는 단일 IP만 사용할 수 있습니다.";
                 return false;
             }
-        }
     }
     return true;
 }
@@ -140,6 +141,7 @@ bool saveSettings(const std::wstring& dir, const Settings& value, std::wstring& 
     std::wstring contents = L"TEC1\n" + value.guid + L"\n";
     for (const auto& ip : value.networks) contents += L"net " + ip + L"\n";
     for (const auto& ip : value.dns) contents += L"dns " + ip + L"\n";
+    if (value.apps) contents += L"apps " + std::to_wstring(value.apps) + L"\n";
     const auto tmp = dir + L"\\settings.tmp", target = dir + L"\\settings.dat";
     HANDLE f = CreateFileW(tmp.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
     if (f == INVALID_HANDLE_VALUE) { error = message(L"설정을 쓰지 못했습니다.", GetLastError()); return false; }
@@ -177,6 +179,9 @@ bool loadSettings(const std::wstring& dir, Settings& output, std::wstring& error
         auto line = data.substr(begin,end-begin);
         if (line.compare(0,4,L"net ") == 0) value.networks.push_back(line.substr(4));
         else if (line.compare(0,4,L"dns ") == 0) value.dns.push_back(line.substr(4));
+        else if (line.compare(0,5,L"apps ")==0 && line.size()>=6 && line.size()<=7 && !value.apps &&
+                 line.find_first_not_of(L"0123456789",5)==line.npos && line[5]!=L'0')
+            value.apps=static_cast<unsigned>(std::stoi(line.substr(5)));
         else return false;
     }
     if (!validate(value,error)) return false;

@@ -19,6 +19,8 @@ struct Policy {
     unsigned long long luid = 0;
     std::vector<std::wstring> networks, dns;
     std::vector<std::wstring> dhcp;
+    std::vector<std::wstring> appPaths;
+    std::wstring webHelper;
 };
 struct Adapter {
     std::wstring guid, name;
@@ -27,6 +29,7 @@ struct Adapter {
 struct Settings {
     std::wstring guid;
     std::vector<std::wstring> networks, dns;
+    unsigned apps = 0;
 };
 struct Attempt {
     FILETIME time{};
@@ -41,6 +44,10 @@ struct Row {
 };
 
 bool parsePrefix(const std::wstring& text, int& family, std::array<unsigned char,16>& bytes, unsigned& bits);
+bool expandNetworks(const std::vector<std::wstring>& input, std::vector<std::wstring>& output, std::wstring& error);
+bool resolveApps(unsigned selected, std::vector<std::wstring>& paths, std::wstring& error);
+int githubWindow();
+bool githubHost(const std::string& host);
 std::vector<Adapter> adapters(std::wstring& error);
 bool validate(const Settings& settings, std::wstring& error);
 // Empty on failure. Production only. Tests and previews never use this directory.

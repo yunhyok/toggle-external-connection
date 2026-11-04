@@ -1,5 +1,6 @@
 #include "app.h"
 #include <commctrl.h>
+#include <uxtheme.h>
 #include <shellapi.h>
 #include <shlobj.h>
 #include <algorithm>
@@ -19,7 +20,8 @@ constexpr UINT trayMessage = WM_APP + 1, trialEnded = WM_APP + 2;
 constexpr UINT timerRefresh = 1, timerClick = 2, timerTrial = 3;
 enum { navSettings = 1001, navHistory, toggleButton, adapterCombo, networkEdit,
        dnsEdit, saveButton, trialButton, appFilter, ipFilter, historyList,
-       selectedPath, refreshButton, exitCommand = 1100, trialCommand };
+       selectedPath, refreshButton, firstDev, lastDev=firstDev+4, webCommand, exitCommand = 1100, trialCommand };
+const wchar_t* devNames[]={L"Codex",L"Claude",L"Antigravity",L"Git · gh",L"GitHub 웹"};
 HINSTANCE instance;
 UINT taskbarCreated;
 HFONT normalFont, titleFont, headingFont;
@@ -74,6 +76,7 @@ struct Ui {
     HWND window{}, settingsPane{}, historyPane{}, adaptersControl{}, networks{}, dns{}, metadata{},
          save{}, trial{}, toggle{}, settingsNav{}, historyNav{}, logControl{}, list{}, appSearch{}, ipSearch{}, path{};
     std::vector<HWND> settingsChildren;
+    HWND dev[5]{};
     std::vector<tec::Adapter> adapters;
     std::vector<tec::Row> visibleRows;
     tec::Settings saved;
@@ -151,6 +154,7 @@ struct Ui {
         EnableWindow(save, !preview && !active);
         EnableWindow(trial, !preview && confirmed && !active);
         EnableWindow(adaptersControl, !preview && !active);
+        for (auto box : dev) EnableWindow(box,!preview && !active);
         SendMessageW(networks, EM_SETREADONLY, preview || active, 0);
         SendMessageW(dns, EM_SETREADONLY, preview || active, 0);
         statusDetails();
@@ -208,13 +212,22 @@ struct Ui {
         tec::Settings candidate;
         candidate.guid = adapters[selected].guid;
         candidate.networks = split(text(networks)); candidate.dns = split(text(dns));
+        for (unsigned i=0;i<5;++i) if (SendMessageW(dev[i],BM_GETCHECK,0,0)==BST_CHECKED) candidate.apps |= 1u<<i;
         std::wstring error;
         if (!tec::validate(candidate, error)) { failure(error); return; }
-        const std::wstring summary = L"선택한 어댑터: " + adapters[selected].name + L"\n\n내부망 " +
+        std::vector<std::wstring> apps;
+        if (!tec::resolveApps(candidate.apps,apps,error)) { failure(error); return; }
+        std::wstring summary = L"선택한 어댑터: " + adapters[selected].name + L"\n\n내부망 " +
             std::to_wstring(candidate.networks.size()) + L"개, DNS 서버 " + std::to_wstring(candidate.dns.size()) +
             L"개를 허용 목록으로 저장합니다.\n\n모든 어댑터의 외부 연결을 막고,\n"
             L"선택한 어댑터에서 지정한 내부 주소를 허용합니다.\n"
-            L"DNS 서버 예외는 TCP/UDP 53번 포트에만 적용됩니다.\n\n이 설정을 확인하고 저장하시겠습니까?";
+            L"DNS 서버 예외는 TCP/UDP 53번 포트에만 적용됩니다.";
+        if (candidate.apps) {
+            summary+=L"\n\n외부 접속 허용: ";
+            for (unsigned i=0;i<5;++i) if (candidate.apps & (1u<<i)) summary+=std::wstring(devNames[i])+L"  ";
+            if (!apps.empty()) summary+=L"\n확인한 앱 실행 파일 "+std::to_wstring(apps.size())+L"개 · 목적지 제한 없음";
+        }
+        summary+=L"\n\n이 설정을 저장할까요?";
         if (MessageBoxW(window, summary.c_str(), L"허용 범위 확인", MB_YESNO | MB_ICONQUESTION | MB_DEFBUTTON2) != IDYES) return;
         if (!tec::saveSettings(dir, candidate, error)) { failure(error); return; }
         saved = std::move(candidate); confirmed = true;
@@ -233,6 +246,8 @@ struct Ui {
         }
         tec::Policy policy = found->suggested;
         policy.networks = saved.networks; policy.dns = saved.dns;
+        if (!tec::resolveApps(saved.apps,policy.appPaths,error)) { failure(error); return; }
+        if (saved.apps & 16) policy.webHelper=tec::installedExe();
         if(test && !trialCancel) trialCancel=CreateEventW(nullptr,TRUE,FALSE,nullptr);
         if(test && !trialCancel) { failure(L"시험 차단의 자동 해제 타이머를 만들지 못했습니다."); return; }
         std::wstring warning;
@@ -321,6 +336,7 @@ struct Ui {
         HMENU popup = CreatePopupMenu();
         AppendMenuW(popup, MF_STRING, navSettings, L"설정 열기");
         AppendMenuW(popup, MF_STRING, navHistory, L"차단 기록 보기");
+        AppendMenuW(popup, MF_STRING | ((saved.apps&16) ? 0 : MF_GRAYED), webCommand, L"GitHub 전용 창 열기");
         AppendMenuW(popup, MF_SEPARATOR, 0, nullptr);
         AppendMenuW(popup, MF_STRING | (engine.active() || !confirmed ? MF_GRAYED : 0), trialCommand, L"60초 시험 차단");
         AppendMenuW(popup, MF_SEPARATOR, 0, nullptr);
@@ -338,7 +354,7 @@ struct Ui {
         DrawTextW(dc,statusText.c_str(),-1,&status,DT_CALCRECT|DT_WORDBREAK);
         ReleaseDC(logControl,dc);
         const int statusHeight=std::max(43,MulDiv(status.bottom,96,dpi));
-        const int contentHeight=477+statusHeight+15;
+        const int contentHeight=547+statusHeight+15;
         SCROLLINFO si{sizeof(si), SIF_RANGE | SIF_PAGE | SIF_POS};
         si.nMin = 0; si.nMax = s(contentHeight) - 1; si.nPage = client.bottom;
         scroll = std::max(0, std::min(scroll, std::max(0, s(contentHeight) - static_cast<int>(client.bottom))));
@@ -355,9 +371,12 @@ struct Ui {
         place(dns, margin+half+gap, y+178, half, 142);
         place(settingsChildren[3], margin, y+328, half, 46);
         place(settingsChildren[4], margin+half+gap, y+328, half, 46);
-        place(save, margin, y+389, 150, 40); place(trial, margin+164, y+389, 170, 40);
-        place(settingsChildren[5], margin, y+448, width-36, 24);
-        place(logControl, margin, y+477, width-36, statusHeight);
+        place(settingsChildren[6],margin,y+379,width-36,25);
+        const int step=(width-36)/5;
+        for (int i=0;i<5;++i) place(dev[i],margin+i*step,y+411,step-3,28);
+        place(save, margin, y+459, 150, 40); place(trial, margin+164, y+459, 170, 40);
+        place(settingsChildren[5], margin, y+518, width-36, 24);
+        place(logControl, margin, y+547, width-36, statusHeight);
     }
     void layout() {
         if (!window || !settingsPane) return;
@@ -435,7 +454,7 @@ LRESULT commonColors(UINT message, WPARAM wp, LPARAM lp) {
 LRESULT CALLBACK paneProc(HWND hwnd, UINT message, WPARAM wp, LPARAM lp) {
     switch (message) {
     case WM_ERASEBKGND: { RECT r{}; GetClientRect(hwnd,&r); FillRect(reinterpret_cast<HDC>(wp),&r,panelBrush); return 1; }
-    case WM_CTLCOLORSTATIC: case WM_CTLCOLOREDIT: case WM_CTLCOLORLISTBOX: return commonColors(message,wp,lp);
+    case WM_CTLCOLORBTN: case WM_CTLCOLORSTATIC: case WM_CTLCOLOREDIT: case WM_CTLCOLORLISTBOX: return commonColors(message,wp,lp);
     case WM_COMMAND: case WM_NOTIFY: case WM_DRAWITEM: return SendMessageW(ui->window,message,wp,lp);
     case WM_VSCROLL:
         if (hwnd == ui->settingsPane) {
@@ -482,17 +501,22 @@ void createControls() {
     SendMessageW(ui->label(L"인트라넷을 사용할 어댑터"),WM_SETFONT,reinterpret_cast<WPARAM>(headingFont),TRUE);
     ui->adaptersControl=ui->control(ui->settingsPane,L"COMBOBOX",L"",CBS_DROPDOWNLIST|CBS_HASSTRINGS|WS_VSCROLL|WS_TABSTOP,adapterCombo);
     ui->metadata=ui->control(ui->settingsPane,L"STATIC",L"",SS_LEFT);
-    ui->label(L"허용할 내부망 · 한 줄에 CIDR 하나");
+    ui->label(L"허용할 내부망 · IP, CIDR 또는 패턴");
     ui->label(L"허용할 DNS 서버 · 한 줄에 IP 하나");
     const DWORD multiline=WS_TABSTOP|ES_MULTILINE|ES_AUTOVSCROLL|ES_WANTRETURN|WS_VSCROLL;
     ui->networks=ui->control(ui->settingsPane,L"EDIT",L"",multiline,networkEdit,WS_EX_CLIENTEDGE);
     ui->dns=ui->control(ui->settingsPane,L"EDIT",L"",multiline,dnsEdit,WS_EX_CLIENTEDGE);
     SendMessageW(ui->networks,EM_SETLIMITTEXT,16384,0); SendMessageW(ui->dns,EM_SETLIMITTEXT,16384,0);
-    ui->label(L"예: 192.168.10.0/24, fd12:3456::/64\r\n자동 제안된 범위도 직접 확인하세요.");
+    ui->label(L"예: 172.16.1.*, 172.16.*.*, 172.16.1.2?\r\n한 줄에 하나씩 입력하세요. ?는 숫자 한 자리입니다.");
     ui->label(L"DNS 예외는 TCP/UDP 53번 포트에만 적용됩니다.\r\n내부망과 DNS는 별도로 저장합니다.");
     ui->save=ui->control(ui->settingsPane,L"BUTTON",L"설정 확인 및 저장",BS_OWNERDRAW|BS_NOTIFY|WS_TABSTOP,saveButton);
     ui->trial=ui->control(ui->settingsPane,L"BUTTON",L"60초 시험 차단",BS_OWNERDRAW|BS_NOTIFY|WS_TABSTOP,trialButton);
     ui->label(L"현재 상태");
+    ui->label(L"차단 중 외부 접속을 허용할 개발 앱");
+    for (int i=0;i<5;++i) {
+        ui->dev[i]=ui->control(ui->settingsPane,L"BUTTON",devNames[i],BS_AUTOCHECKBOX|BS_NOTIFY|WS_TABSTOP,firstDev+i);
+        SetWindowTheme(ui->dev[i],L"",L"");
+    }
     ui->logControl=ui->control(ui->settingsPane,L"STATIC",L"",SS_LEFT);
     ui->control(ui->historyPane,L"STATIC",L"프로그램 이름 또는 전체 경로",0,2001);
     ui->control(ui->historyPane,L"STATIC",L"대상 IP",0,2002);
@@ -564,6 +588,9 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wp, LPARAM lp) {
             else if(item.bottom>viewport.bottom-margin) ui->scroll+=std::min(item.bottom-viewport.bottom+margin,item.top-viewport.top-margin);
             ui->layoutSettings();
         }
+        if (LOWORD(wp)>=firstDev && LOWORD(wp)<=lastDev && HIWORD(wp)==BN_CLICKED) {
+            ui->confirmed=false; ui->updateState(); return 0;
+        }
         switch(LOWORD(wp)) {
         case navSettings: ui->show(false); return 0; case navHistory: ui->show(true); return 0;
         case toggleButton: ui->toggleState(); return 0;
@@ -577,6 +604,16 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wp, LPARAM lp) {
         case appFilter: case ipFilter:
             if(HIWORD(wp)==EN_CHANGE) ui->refreshHistory(); return 0;
         case refreshButton: ui->refreshHistory(); return 0;
+        case webCommand: {
+            PWSTR programs=nullptr;
+            if (FAILED(SHGetKnownFolderPath(FOLDERID_CommonPrograms,0,nullptr,&programs))) return 0;
+            std::wstring link=L"\""+std::wstring(programs)+L"\\Toggle External Connection\\GitHub Web.lnk\"";
+            CoTaskMemFree(programs); wchar_t windows[MAX_PATH]{};
+            GetWindowsDirectoryW(windows,MAX_PATH);
+            const auto explorer=std::wstring(windows)+L"\\explorer.exe";
+            ShellExecuteW(hwnd,L"open",explorer.c_str(),link.c_str(),nullptr,SW_SHOWNORMAL);
+            return 0;
+        }
         case IDCANCEL: SendMessageW(hwnd,WM_CLOSE,0,0); return 0;
         } break;
     case WM_NOTIFY: {
@@ -687,6 +724,7 @@ int WINAPI wWinMain(HINSTANCE app, HINSTANCE, PWSTR, int) {
     assert(lower(L"C:\\Tools\\APP.EXE").find(L"app.exe") != std::wstring::npos);
     instance=app;
     int argc=0; LPWSTR* argv=CommandLineToArgvW(GetCommandLineW(),&argc);
+    if (argv && argc==2 && wcscmp(argv[1],L"--github-web")==0) {LocalFree(argv);return tec::githubWindow();}
     Ui state; bool elevated=false;
     for(int i=1;argv && i<argc;++i) {
         if(wcscmp(argv[i],L"--preview")==0) state.preview=true;
@@ -740,6 +778,7 @@ int WINAPI wWinMain(HINSTANCE app, HINSTANCE, PWSTR, int) {
             state.loadAdapters();
             // Setting edit notifications invalidate confirmation while fields are populated.
             state.confirmed=loaded && state.adapterIndex()>=0;
+            for(unsigned i=0;i<5;++i) SendMessageW(state.dev[i],BM_SETCHECK,(state.saved.apps&(1u<<i))?BST_CHECKED:BST_UNCHECKED,0);
             if(state.confirmed) state.addLog(L"저장된 인트라넷 설정을 사용합니다.");
         }
     } else { state.loadAdapters(); state.addLog(L"읽기 전용 UI 미리 보기입니다. 표시된 어댑터와 기록은 예시입니다."); }

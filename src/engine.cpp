@@ -26,6 +26,7 @@ namespace {
 thread_local bool abortForTest = false, rollbackAccepted = false, probeForTest = false;
 thread_local DWORD wfpTestCode = ERROR_SUCCESS;
 thread_local std::vector<GUID> probeKeys;
+thread_local FWP_BYTE_BLOB* restrictedTestApp=nullptr;
 constexpr UINT32 probeAddress = 0xc000027b; // 192.0.2.123, reserved for documentation.
 constexpr UINT16 probeTcpPort = 40571, probeUdpPort = 40572;
 
@@ -57,6 +58,10 @@ const Layer layers[] = {
     {&FWPM_LAYER_OUTBOUND_TRANSPORT_V6, AF_INET6, false, false},
     {&FWPM_LAYER_ALE_AUTH_CONNECT_V4, AF_INET, false, true},
     {&FWPM_LAYER_ALE_AUTH_CONNECT_V6, AF_INET6, false, true}
+};
+const Layer acceptLayers[] = {
+    {&FWPM_LAYER_ALE_AUTH_RECV_ACCEPT_V4, AF_INET, true, false},
+    {&FWPM_LAYER_ALE_AUTH_RECV_ACCEPT_V6, AF_INET6, true, false}
 };
 
 std::wstring failure(const wchar_t* operation, DWORD code) {
@@ -144,6 +149,7 @@ struct Engine::Impl {
     HANDLE engine = nullptr, subscription = nullptr;
     GUID sublayer{};
     std::vector<GUID> blockKeys;
+    std::atomic<size_t> expectedBlocks{6};
     std::vector<std::pair<UINT64, UINT16>> aleIds;
     std::function<void(Attempt)> sink;
     std::atomic<bool> running{false};
@@ -276,6 +282,17 @@ struct Engine::Impl {
     }
 
     DWORD add(const Layer& layer, bool permit, std::vector<FWPM_FILTER_CONDITION0> conditions) {
+#ifdef TEC_TESTING
+        // A live allow-list test can deny only this test executable; production filters remain unmodified.
+        if (!permit && restrictedTestApp) {
+            if (restrictedTestApp->size==0 || !restrictedTestApp->data ||
+                (!layer.ale && !IsEqualGUID(*layer.key,FWPM_LAYER_ALE_AUTH_RECV_ACCEPT_V4) &&
+                 !IsEqualGUID(*layer.key,FWPM_LAYER_ALE_AUTH_RECV_ACCEPT_V6))) return ERROR_INVALID_PARAMETER;
+            auto identity=number(FWPM_CONDITION_ALE_APP_ID,FWP_BYTE_BLOB_TYPE,0);
+            identity.conditionValue.byteBlob=restrictedTestApp;
+            conditions.push_back(identity);
+        }
+#endif
         FWPM_FILTER0 filter{};
         filter.displayData.name = const_cast<wchar_t*>(permit ? L"TEC 내부 통신 허용" : L"TEC 외부 통신 차단");
         filter.layerKey = *layer.key;
@@ -342,10 +359,32 @@ struct Engine::Impl {
     DWORD rules(const Policy& policy, const std::vector<Prefix>& networks,
                 const std::vector<Prefix>& dns, const std::vector<Prefix>& dhcp) {
         DWORD result = ERROR_SUCCESS;
-        for (const auto& layer : layers) {
+        std::vector<Layer> activeLayers;
+        if (policy.appPaths.empty() && policy.webHelper.empty()) activeLayers.assign(std::begin(layers),std::end(layers));
+        else {
+            // Transport cannot identify a process. ALE reauthorizes existing flows when policy changes.
+            activeLayers={layers[4], layers[5], acceptLayers[0], acceptLayers[1]};
+        }
+        expectedBlocks=activeLayers.size();
+        for (const auto& layer : activeLayers) {
             if (result != ERROR_SUCCESS) break;
             result = add(layer, true, {number(FWPM_CONDITION_FLAGS, FWP_UINT32,
                          FWP_CONDITION_FLAG_IS_LOOPBACK, FWP_MATCH_FLAGS_ALL_SET)});
+            auto allowedApps=policy.appPaths;
+            if (!policy.webHelper.empty()) allowedApps.push_back(policy.webHelper);
+            if (layer.ale) for (const auto& path : allowedApps) {
+                if (result!=ERROR_SUCCESS) break;
+                FWP_BYTE_BLOB* id=nullptr;
+                result=FwpmGetAppIdFromFileName0(path.c_str(),&id);
+                if (result!=ERROR_SUCCESS) break;
+                auto identity=number(FWPM_CONDITION_ALE_APP_ID,FWP_BYTE_BLOB_TYPE,0);
+                identity.conditionValue.byteBlob=id;
+                if (path==policy.webHelper)
+                    result=add(layer,true,{identity,number(FWPM_CONDITION_IP_PROTOCOL,FWP_UINT8,IPPROTO_TCP),
+                                          number(FWPM_CONDITION_IP_REMOTE_PORT,FWP_UINT16,443)});
+                else result=add(layer,true,{identity});
+                FwpmFreeMemory0(reinterpret_cast<void**>(&id));
+            }
             for (const auto& network : networks) {
                 if (result != ERROR_SUCCESS) break;
                 if (network.family == layer.family) result = allow(layer, policy.luid, &network);
@@ -615,8 +654,10 @@ bool Engine::start(const Policy& policy, std::function<void(Attempt)> callback,
     p->probing = probeForTest;
 #endif
     std::vector<Prefix> networks, dns, dhcp;
+    std::vector<std::wstring> expanded;
+    if (!expandNetworks(policy.networks,expanded,error)) return false;
     if (!policy.luid || policy.networks.empty() ||
-        !readPrefixes(policy.networks, false, networks) || !readPrefixes(policy.dns, true, dns) ||
+        !readPrefixes(expanded, false, networks) || !readPrefixes(policy.dns, true, dns) ||
         !readPrefixes(policy.dhcp, true, dhcp)) {
         error = L"어댑터 또는 허용 주소 설정이 올바르지 않습니다.";
         return false;
@@ -736,7 +777,7 @@ bool Engine::healthy() const {
         }
         std::lock_guard<std::mutex> lock(p->events);
         if (version != p->generation) continue;
-        return result == ERROR_SUCCESS && keys.size() == 6 && p->running;
+        return result == ERROR_SUCCESS && keys.size() == p->expectedBlocks && p->running;
     }
     return p->running.load();
 }
@@ -744,6 +785,37 @@ bool Engine::healthy() const {
 
 #ifdef TEC_TESTING
 void testEngine() { tec::Engine engine; }
+void testCiAppException() {
+    wchar_t actions[16]{}, self[32768]{}, system[MAX_PATH]{};
+    if (!GetEnvironmentVariableW(L"GITHUB_ACTIONS",actions,16) || wcscmp(actions,L"true") ||
+        !GetModuleFileNameW(nullptr,self,32768) || !GetSystemDirectoryW(system,MAX_PATH))
+        throw std::runtime_error("CI-only app exception test");
+    WSADATA ws{}; if(WSAStartup(MAKEWORD(2,2),&ws)) throw std::runtime_error("WSAStartup");
+    struct Cleanup {~Cleanup(){WSACleanup();}} cleanup;
+    addrinfo hints{},*addresses=nullptr; hints.ai_family=AF_INET; hints.ai_socktype=SOCK_STREAM;
+    if(getaddrinfo("api.github.com","443",&hints,&addresses)!=0) throw std::runtime_error("GitHub test peer unavailable");
+    sockaddr_in peer=*reinterpret_cast<sockaddr_in*>(addresses->ai_addr); freeaddrinfo(addresses);
+    auto dial=[&] {
+        SOCKET s=socket(AF_INET,SOCK_STREAM,IPPROTO_TCP);
+        if(s==INVALID_SOCKET) throw std::runtime_error("socket creation");
+        int rc=connect(s,reinterpret_cast<sockaddr*>(&peer),sizeof(peer));
+        int code=rc==0 ? 0 : WSAGetLastError(); closesocket(s); return code;
+    };
+    if(dial()) throw std::runtime_error("baseline TLS port unreachable");
+    if(FwpmGetAppIdFromFileName0(self,&tec::restrictedTestApp)!=0 || !tec::restrictedTestApp) throw std::runtime_error("no test identity");
+    struct FreeId {~FreeId(){FwpmFreeMemory0(reinterpret_cast<void**>(&tec::restrictedTestApp));tec::restrictedTestApp=nullptr;}} freeId;
+    tec::Policy policy; policy.luid=123; policy.networks={L"172.16.*.*"};
+    std::wstring err,warn;
+    for(bool allow : {true,false}) {
+        policy.appPaths={allow ? std::wstring(self) : std::wstring(system)+L"\\whoami.exe"};
+        tec::Engine engine;
+        if(!engine.start(policy,{},err,warn)) throw std::runtime_error(tec::testText(err));
+        int result=dial();
+        if ((allow && result!=0) || (!allow && result!=WSAEACCES))
+            throw std::runtime_error("application exception mismatch, WSA="+std::to_string(result));
+    }
+    if(dial()) throw std::runtime_error("direct connection not restored");
+}
 void testWfpRollback() {
     wchar_t actions[16]{};
     if (!GetEnvironmentVariableW(L"GITHUB_ACTIONS", actions, 16) || wcscmp(actions, L"true") != 0)

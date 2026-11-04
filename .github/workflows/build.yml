@@ -25,6 +25,9 @@ jobs:
       - name: Verify TCP and UDP attribution for one test program and destination
         shell: pwsh
         run: .\build\${{ matrix.target }}\offline-tests.exe --ci-wfp-probe
+      - name: Verify app exceptions and GitHub web relay
+        shell: pwsh
+        run: .\build\${{ matrix.target }}\offline-tests.exe --ci-app-exception
       - name: Package installer
         shell: pwsh
         run: |
