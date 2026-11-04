@@ -57,6 +57,7 @@ const
   UninstallKey = 'Software\Microsoft\Windows\CurrentVersion\Uninstall\{CA78C24A-7964-4F3A-8F40-DA64E9D82A11}_is1';
 var
   GuardExtracted: Boolean;
+  PreserveGoogleLogin: Boolean;
   DestinationNote: TNewStaticText;
 
 function RunGuard(const Mode: String): Boolean;
@@ -87,9 +88,12 @@ end;
 function PrepareToInstall(var NeedsRestart: Boolean): String;
 var
   PreviousDir, Uninstaller: String;
+  GoogleLogin: Cardinal;
   ExitCode: Integer;
 begin
   Result := '';
+  if RegQueryDWordValue(HKLM64, UninstallKey, 'TECAllowGoogleLogin', GoogleLogin) then
+    PreserveGoogleLogin := GoogleLogin = 1;
   if not RunGuard('--prepare') then begin
     Result := CustomMessage('UnsafeDestination');
     Exit;
@@ -117,6 +121,9 @@ procedure CurStepChanged(CurStep: TSetupStep);
 begin
   if (CurStep = ssPostInstall) and not RunGuard('--seal') then
     RaiseException(CustomMessage('UnsafeDestination'));
+  if (CurStep = ssPostInstall) and PreserveGoogleLogin then
+    if not RegWriteDWordValue(HKLM64, UninstallKey, 'TECAllowGoogleLogin', 1) then
+      RaiseException('Could not restore the Google sign-in preference.');
 end;
 
 [CustomMessages]

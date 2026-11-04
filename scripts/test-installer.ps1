@@ -39,9 +39,11 @@ Assert-Wizard $default english
 if (Invoke-Setup '') { throw 'Default installation failed.' }
 Assert-Installed $default
 Assert-Wizard $default korean
+if ((Get-ItemProperty $key).TECAllowGoogleLogin) { throw 'Fresh install enabled Google sign-in.' }
 & $tests --ci-install-path
 if ($LASTEXITCODE) { throw 'Installed settings test failed.' }
 $settingsHash = (Get-FileHash "$default\Data\settings.dat").Hash
+New-ItemProperty $key TECAllowGoogleLogin -PropertyType DWord -Value 1 -Force | Out-Null
 # A journal fixture verifies byte preservation without running the policy engine.
 $journal = 'history-20261103.log'
 [IO.File]::WriteAllBytes("$default\Data\$journal", [byte[]](0..255))
@@ -56,6 +58,7 @@ if (Invoke-Setup $default) {
 }
 if ((Get-FileHash "$default\Data\settings.dat").Hash -ne $settingsHash) { throw 'Same-folder upgrade changed settings.' }
 if (Invoke-Setup $alternate) { throw 'Relocation failed.' }
+if ((Get-ItemProperty $key).TECAllowGoogleLogin -ne 1) { throw 'Relocation lost the Google sign-in preference.' }
 Assert-Installed $alternate
 if ((Test-Path "$default\ToggleExternalConnection.exe") -or (Test-Path "$default\Data\settings.dat")) { throw 'Previous installation was not retired.' }
 if ((Get-FileHash "$alternate\Data\settings.dat").Hash -ne $settingsHash -or

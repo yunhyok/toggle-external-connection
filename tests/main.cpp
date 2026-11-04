@@ -37,6 +37,11 @@ static void testSettings() {
         check(tec::githubHost(host),"GitHub host");
     for(auto host : {"notgithub.com","github.com.evil.test","127.0.0.1","user@github.com","xx..github.com","gitlab.com"})
         check(!tec::githubHost(host),"off-site relay refused");
+    for(auto host : {"accounts.google.com","www.gstatic.com","ssl.gstatic.com","fonts.gstatic.com"})
+        check(tec::googleLoginHost(host) && !tec::githubHost(host),"Google identity needs separate opt-in");
+    for(auto host : {"accounts.google.com.attacker.test","fake.accounts.google.com","google.com",
+                     "mail.google.com","drive.google.com","foo.googleapis.com","accounts.google.com:80"})
+        check(!tec::googleLoginHost(host),"exact Google authentication hosts only");
     auto invalid = config; invalid.networks = {L"::/0"};
     check(!tec::validate(invalid,error), "default allow-all route");
     invalid = config; invalid.dns = {L"192.0.2.0/24"};

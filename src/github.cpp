@@ -11,6 +11,28 @@
 #endif
 
 namespace tec {
+namespace {
+constexpr auto registryKey=L"Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\{CA78C24A-7964-4F3A-8F40-DA64E9D82A11}_is1";
+constexpr auto googleOption=L"TECAllowGoogleLogin";
+}
+bool googleLoginAllowed() {
+    DWORD value=0, size=sizeof(value);
+    return RegGetValueW(HKEY_LOCAL_MACHINE,registryKey,googleOption,RRF_RT_REG_DWORD,nullptr,&value,&size)==ERROR_SUCCESS && value==1;
+}
+DWORD setGoogleLoginAllowed(bool enabled) {
+    HKEY key=nullptr;
+    auto result=RegOpenKeyExW(HKEY_LOCAL_MACHINE,registryKey,0,KEY_SET_VALUE,&key);
+    if(result!=ERROR_SUCCESS) return result;
+    DWORD value=enabled?1:0;
+    result=RegSetValueExW(key,googleOption,0,REG_DWORD,reinterpret_cast<const BYTE*>(&value),sizeof(value));
+    RegCloseKey(key); return result;
+}
+bool googleLoginHost(const std::string& host) {
+    for(auto name : {"accounts.google.com","accounts.gstatic.com","ssl.gstatic.com","www.gstatic.com",
+                     "fonts.googleapis.com","fonts.gstatic.com"})
+        if(host==name) return true;
+    return false;
+}
 bool githubHost(const std::string& host) {
     if (host.empty() || host.size()>253 || host.front()=='.' || host.back()=='.') return false;
     size_t begin=0;
@@ -47,7 +69,7 @@ void timeouts(SOCKET s) {
     setsockopt(s,SOL_SOCKET,SO_RCVTIMEO,reinterpret_cast<const char*>(&timeout),sizeof(timeout));
     setsockopt(s,SOL_SOCKET,SO_SNDTIMEO,reinterpret_cast<const char*>(&timeout),sizeof(timeout));
 }
-void tunnel(SOCKET client,const std::atomic<bool>& stopping) {
+void tunnel(SOCKET client,const std::atomic<bool>& stopping,bool (*allowGoogle)()) {
     Socket local(client); timeouts(client);
     char buf[16384]; std::string header;
     auto end=header.npos;
@@ -59,12 +81,13 @@ void tunnel(SOCKET client,const std::atomic<bool>& stopping) {
     if (end==header.npos || space==header.npos || header.compare(0,8,"CONNECT ")!=0) return;
     auto authority=header.substr(8,space-8);
     for(auto& c:authority) if(c>='A' && c<='Z') c+=32;
-    if(authority.size()<=4 || authority.compare(authority.size()-4,4,":443")!=0 ||
-       !githubHost(authority.substr(0,authority.size()-4))) {
+    const auto host=authority.size()>4 && authority.compare(authority.size()-4,4,":443")==0
+        ? authority.substr(0,authority.size()-4) : std::string();
+    const bool google=googleLoginHost(host);
+    if(!githubHost(host) && !(google && allowGoogle())) {
         static const char denied[]="HTTP/1.1 403 Forbidden\r\nConnection: close\r\nContent-Length: 0\r\n\r\n";
         sendAll(client,denied,sizeof(denied)-1); return;
     }
-    std::string host=authority.substr(0,authority.size()-4);
     addrinfo hints{},*addresses=nullptr; hints.ai_socktype=SOCK_STREAM; hints.ai_protocol=IPPROTO_TCP;
     if (getaddrinfo(host.c_str(),"443",&hints,&addresses)!=0) return;
     SOCKET upstream=INVALID_SOCKET;
@@ -89,7 +112,13 @@ void tunnel(SOCKET client,const std::atomic<bool>& stopping) {
     timeouts(upstream);
     static const char ready[]="HTTP/1.1 200 Connection Established\r\n\r\n";
     if (!sendAll(client,ready,sizeof(ready)-1) || !sendAll(upstream,header.data()+end+4,static_cast<int>(header.size()-end-4))) return;
+    ULONGLONG lastPolicyCheck=0;
     while(!stopping) {
+        // Close an existing Google tunnel as well when the user revokes the option.
+        if(google && GetTickCount64()-lastPolicyCheck>=1000) {
+            if(!allowGoogle()) return;
+            lastPolicyCheck=GetTickCount64();
+        }
         fd_set fds; FD_ZERO(&fds); FD_SET(client,&fds); FD_SET(upstream,&fds); timeval tv{1,0};
         int n=select(0,&fds,nullptr,nullptr,&tv); if(n<0) return;
         for(auto from : {client,upstream}) if(FD_ISSET(from,&fds)) {
@@ -153,7 +182,7 @@ int githubWindow() {
         SOCKET client=accept(listener.s,nullptr,nullptr); if(client==INVALID_SOCKET) continue;
         connected=true;
         if(workers.size()>=64) {closesocket(client);continue;}
-        try {workers.push_back(std::async(std::launch::async,tunnel,client,std::cref(stopping)));}
+        try {workers.push_back(std::async(std::launch::async,tunnel,client,std::cref(stopping),googleLoginAllowed));}
         catch(...) {closesocket(client);}
     }
     DWORD exitCode=0; GetExitCodeProcess(proc.hProcess,&exitCode);
@@ -174,22 +203,28 @@ void testCiGithubProxy() {
     sockaddr_in addr{};addr.sin_family=AF_INET;addr.sin_addr.s_addr=htonl(INADDR_LOOPBACK);int len=sizeof(addr);
     if(bind(listener.s,reinterpret_cast<sockaddr*>(&addr),len) || listen(listener.s,4) ||
        getsockname(listener.s,reinterpret_cast<sockaddr*>(&addr),&len)) throw std::runtime_error("proxy test listener");
-    for(bool allow : {true,false}) {
+    struct Probe {const wchar_t* url; bool google,allowed;};
+    for(const auto& probe : {Probe{L"https://api.github.com/repos/git/git",false,true},
+                             Probe{L"https://accounts.google.com/.well-known/openid-configuration",false,false},
+                             Probe{L"https://accounts.google.com/.well-known/openid-configuration",true,true},
+                             Probe{L"https://accounts.google.com/ServiceLogin?hl=ko",true,true},
+                             Probe{L"https://www.google.com/",true,false},Probe{L"https://mail.google.com/",true,false},
+                             Probe{L"https://example.com/",true,false}}) {
         std::atomic<bool> stopping{false};
         auto serve=std::async(std::launch::async,[&] {
             fd_set f;FD_ZERO(&f);FD_SET(listener.s,&f);timeval tv{12,0};
             if(select(0,&f,nullptr,nullptr,&tv)<=0) throw std::runtime_error("curl did not reach proxy");
-            tunnel(accept(listener.s,nullptr,nullptr),stopping);
+            tunnel(accept(listener.s,nullptr,nullptr),stopping,probe.google ? +[](){return true;} : +[](){return false;});
         });
         std::wstring curl=std::wstring(system)+L"\\curl.exe";
         std::wstring command=L"\""+curl+L"\" --disable --noproxy \"\" --silent --fail --max-time 15 --output NUL --proxy http://127.0.0.1:"+
-            std::to_wstring(ntohs(addr.sin_port))+(allow?L" https://api.github.com/repos/git/git":L" https://example.com/");
+            std::to_wstring(ntohs(addr.sin_port))+L" "+probe.url;
         STARTUPINFOW si{sizeof(si)}; PROCESS_INFORMATION proc{};
         if(!CreateProcessW(curl.c_str(),&command[0],nullptr,nullptr,FALSE,CREATE_NO_WINDOW,nullptr,nullptr,&si,&proc))
             throw std::runtime_error("curl unavailable");
         WaitForSingleObject(proc.hProcess,20000);DWORD code=0;GetExitCodeProcess(proc.hProcess,&code);
         CloseHandle(proc.hThread);CloseHandle(proc.hProcess);stopping=true;serve.get();
-        if ((code==0)!=allow) throw std::runtime_error("GitHub web HTTPS relay mismatch, curl="+std::to_string(code));
+        if ((code==0)!=probe.allowed) throw std::runtime_error("GitHub web HTTPS relay mismatch, curl="+std::to_string(code));
     }
 }
 #endif

@@ -20,7 +20,7 @@ constexpr UINT trayMessage = WM_APP + 1, trialEnded = WM_APP + 2;
 constexpr UINT timerRefresh = 1, timerClick = 2, timerTrial = 3;
 enum { navSettings = 1001, navHistory, toggleButton, adapterCombo, networkEdit,
        dnsEdit, saveButton, trialButton, appFilter, ipFilter, historyList,
-       selectedPath, refreshButton, firstDev, lastDev=firstDev+4, webCommand, exitCommand = 1100, trialCommand };
+       selectedPath, refreshButton, firstDev, lastDev=firstDev+4, googleOption, webCommand, exitCommand = 1100, trialCommand };
 const wchar_t* devNames[]={L"Codex",L"Claude",L"Antigravity",L"Git · gh",L"GitHub 웹"};
 HINSTANCE instance;
 UINT taskbarCreated;
@@ -76,7 +76,7 @@ struct Ui {
     HWND window{}, settingsPane{}, historyPane{}, adaptersControl{}, networks{}, dns{}, metadata{},
          save{}, trial{}, toggle{}, settingsNav{}, historyNav{}, logControl{}, list{}, appSearch{}, ipSearch{}, path{};
     std::vector<HWND> settingsChildren;
-    HWND dev[5]{};
+    HWND dev[5]{}, googleLogin{};
     std::vector<tec::Adapter> adapters;
     std::vector<tec::Row> visibleRows;
     tec::Settings saved;
@@ -155,6 +155,7 @@ struct Ui {
         EnableWindow(trial, !preview && confirmed && !active);
         EnableWindow(adaptersControl, !preview && !active);
         for (auto box : dev) EnableWindow(box,!preview && !active);
+        EnableWindow(googleLogin,!preview && !active && SendMessageW(dev[4],BM_GETCHECK,0,0)==BST_CHECKED);
         SendMessageW(networks, EM_SETREADONLY, preview || active, 0);
         SendMessageW(dns, EM_SETREADONLY, preview || active, 0);
         statusDetails();
@@ -213,6 +214,7 @@ struct Ui {
         candidate.guid = adapters[selected].guid;
         candidate.networks = split(text(networks)); candidate.dns = split(text(dns));
         for (unsigned i=0;i<5;++i) if (SendMessageW(dev[i],BM_GETCHECK,0,0)==BST_CHECKED) candidate.apps |= 1u<<i;
+        const bool google=(candidate.apps&16) && SendMessageW(googleLogin,BM_GETCHECK,0,0)==BST_CHECKED;
         std::wstring error;
         if (!tec::validate(candidate, error)) { failure(error); return; }
         std::vector<std::wstring> apps;
@@ -225,12 +227,20 @@ struct Ui {
         if (candidate.apps) {
             summary+=L"\n\n외부 접속 허용: ";
             for (unsigned i=0;i<5;++i) if (candidate.apps & (1u<<i)) summary+=std::wstring(devNames[i])+L"  ";
+            if(google) summary+=L"\nGitHub 전용 MiniBrowser에서 Google 계정 로그인을 허용합니다.";
             if (!apps.empty()) summary+=L"\n확인한 앱 실행 파일 "+std::to_wstring(apps.size())+L"개 · 목적지 제한 없음";
         }
         summary+=L"\n\n이 설정을 저장할까요?";
         if (MessageBoxW(window, summary.c_str(), L"허용 범위 확인", MB_YESNO | MB_ICONQUESTION | MB_DEFBUTTON2) != IDYES) return;
         if (!tec::saveSettings(dir, candidate, error)) { failure(error); return; }
-        saved = std::move(candidate); confirmed = true;
+        saved = std::move(candidate);
+        DWORD result=tec::setGoogleLoginAllowed(google);
+        if(result!=ERROR_SUCCESS) {
+            confirmed=false; updateState();
+            failure(L"앱 설정은 저장됐지만 Google 로그인 옵션을 저장하지 못했습니다. 다시 저장하세요. (Windows "+std::to_wstring(result)+L")");
+            return;
+        }
+        confirmed = true;
         addLog(L"설정을 저장했습니다. 외부 연결 차단을 시작할 수 있습니다."); updateState();
     }
     void start(bool test) {
@@ -354,7 +364,7 @@ struct Ui {
         DrawTextW(dc,statusText.c_str(),-1,&status,DT_CALCRECT|DT_WORDBREAK);
         ReleaseDC(logControl,dc);
         const int statusHeight=std::max(43,MulDiv(status.bottom,96,dpi));
-        const int contentHeight=547+statusHeight+15;
+        const int contentHeight=580+statusHeight+15;
         SCROLLINFO si{sizeof(si), SIF_RANGE | SIF_PAGE | SIF_POS};
         si.nMin = 0; si.nMax = s(contentHeight) - 1; si.nPage = client.bottom;
         scroll = std::max(0, std::min(scroll, std::max(0, s(contentHeight) - static_cast<int>(client.bottom))));
@@ -374,9 +384,10 @@ struct Ui {
         place(settingsChildren[6],margin,y+379,width-36,25);
         const int step=(width-36)/5;
         for (int i=0;i<5;++i) place(dev[i],margin+i*step,y+411,step-3,28);
-        place(save, margin, y+459, 150, 40); place(trial, margin+164, y+459, 170, 40);
-        place(settingsChildren[5], margin, y+518, width-36, 24);
-        place(logControl, margin, y+547, width-36, statusHeight);
+        place(googleLogin,margin,y+444,width-36,28);
+        place(save, margin, y+492, 150, 40); place(trial, margin+164, y+492, 170, 40);
+        place(settingsChildren[5], margin, y+551, width-36, 24);
+        place(logControl, margin, y+580, width-36, statusHeight);
     }
     void layout() {
         if (!window || !settingsPane) return;
@@ -517,6 +528,8 @@ void createControls() {
         ui->dev[i]=ui->control(ui->settingsPane,L"BUTTON",devNames[i],BS_AUTOCHECKBOX|BS_NOTIFY|WS_TABSTOP,firstDev+i);
         SetWindowTheme(ui->dev[i],L"",L"");
     }
+    ui->googleLogin=ui->control(ui->settingsPane,L"BUTTON",L"GitHub 웹에서 Google 로그인 허용",BS_AUTOCHECKBOX|BS_NOTIFY|WS_TABSTOP,googleOption);
+    SetWindowTheme(ui->googleLogin,L"",L"");
     ui->logControl=ui->control(ui->settingsPane,L"STATIC",L"",SS_LEFT);
     ui->control(ui->historyPane,L"STATIC",L"프로그램 이름 또는 전체 경로",0,2001);
     ui->control(ui->historyPane,L"STATIC",L"대상 IP",0,2002);
@@ -588,7 +601,9 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wp, LPARAM lp) {
             else if(item.bottom>viewport.bottom-margin) ui->scroll+=std::min(item.bottom-viewport.bottom+margin,item.top-viewport.top-margin);
             ui->layoutSettings();
         }
-        if (LOWORD(wp)>=firstDev && LOWORD(wp)<=lastDev && HIWORD(wp)==BN_CLICKED) {
+        if (LOWORD(wp)>=firstDev && LOWORD(wp)<=googleOption && HIWORD(wp)==BN_CLICKED) {
+            if(LOWORD(wp)==lastDev && SendMessageW(ui->dev[4],BM_GETCHECK,0,0)!=BST_CHECKED)
+                SendMessageW(ui->googleLogin,BM_SETCHECK,BST_UNCHECKED,0);
             ui->confirmed=false; ui->updateState(); return 0;
         }
         switch(LOWORD(wp)) {
@@ -779,6 +794,7 @@ int WINAPI wWinMain(HINSTANCE app, HINSTANCE, PWSTR, int) {
             // Setting edit notifications invalidate confirmation while fields are populated.
             state.confirmed=loaded && state.adapterIndex()>=0;
             for(unsigned i=0;i<5;++i) SendMessageW(state.dev[i],BM_SETCHECK,(state.saved.apps&(1u<<i))?BST_CHECKED:BST_UNCHECKED,0);
+            SendMessageW(state.googleLogin,BM_SETCHECK,(state.saved.apps&16) && tec::googleLoginAllowed()?BST_CHECKED:BST_UNCHECKED,0);
             if(state.confirmed) state.addLog(L"저장된 인트라넷 설정을 사용합니다.");
         }
     } else { state.loadAdapters(); state.addLog(L"읽기 전용 UI 미리 보기입니다. 표시된 어댑터와 기록은 예시입니다."); }

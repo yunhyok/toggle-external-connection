@@ -46,4 +46,5 @@ GitHub Actions의 설치 시험은 폐기 가능한 실행기에서 기본 설�
 | Codex·Claude·Antigravity | 앱을 먼저 실행. 사용할 앱 하나만 체크하고 저장한 뒤 시험 차단. 선택한 앱에서 새 요청이 성공하는지, 미선택 앱은 차단되는지 확인할 것. |
 | Git · gh | 체크 후 `git ls-remote https://github.com/git/git.git HEAD`, 인증된 `gh api rate_limit` 실행. 해제·저장 후 같은 시험을 반복할 것. |
 | GitHub 웹 | MiniBrowser 0.2.4의 일반 창을 열어 둔 상태에서 체크 후 **MiniBrowser에서 GitHub 열기** 선택. 별도 MiniBrowser 창에서 저장소가 열리고, 같은 창에서 관계없는 외부 HTTPS 도메인은 거부되는지 확인할 것. 전용 창을 닫은 뒤 일반 창이 남는지도 확인할 것. Git · gh와 GitHub 웹은 서로 독립적으로 설정. |
+| Google 로그인 | Google 로그인 옵션을 끄고 저장한 뒤 전용 창에서 Google 계정 주소가 거부되는지 확인할 것. 옵션을 켜고 저장한 뒤 GitHub의 **Continue with Google**에서 계정 화면이 열리는지 확인할 것. Google 검색과 Gmail은 두 경우 모두 차단되어야 함. 실제 계정 인증과 GitHub 복귀는 사용자 계정으로 확인할 것. |
 | 해제·복구 | 60초 후 외부 연결 복구, 예외 앱 연결이 차단 기록에 들어가지 않는지 확인할 것. |

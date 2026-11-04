@@ -47,6 +47,8 @@ Windows 트레이에서 외부 인터넷을 차단하고 지정한 인트라넷 
 
 GitHub 전용 창은 현재 사용자에게 등록된 [MiniBrowser 0.2.4 설치본](https://github.com/yunhyok/MiniBrowser/releases/tag/v0.2.4)을 사용. 일반 MiniBrowser 창은 계속 사용할 수 있으며, 전용 창에서 처음 한 번 별도로 로그인할 것. MiniBrowser 미설치 시 설치 안내 표시. GitHub, 정적 파일, 사용자 콘텐츠 도메인(`github.com`, `githubassets.com`, `githubusercontent.com` 및 그 하위 도메인)의 HTTPS만 중계. 외부 SSO·GitHub Pages·임의 외부 링크는 별도 사이트이므로 제한. 업무에 쓰는 DNS 서버는 허용 목록에서 확인할 것.
 
+**Google 계정으로 GitHub 로그인**이 필요하면 `GitHub 웹`과 `GitHub 웹에서 Google 로그인 허용`을 함께 체크하고 저장할 것. 기본값은 꺼짐. 켠 경우 전용 MiniBrowser의 HTTPS 중계에 정확한 호스트 여섯 개만 추가: `accounts.google.com`, `accounts.gstatic.com`, `ssl.gstatic.com`, `www.gstatic.com`, `fonts.googleapis.com`, `fonts.gstatic.com`. Google 검색·Gmail·Drive 제외. 터널 연결 오류는 주소 허용 여부를, Google이 표시하는 브라우저 제한 오류는 [Google OAuth 안내](https://developers.google.com/identity/protocols/oauth2/web-server#authorization-errors)를 확인할 것.
+
 ### 차단 기록
 
 **차단 기록 보기**에서 프로그램 경로와 목적지 IP로 검색할 수 있습니다. 기록에는 처음·마지막 관측 시각, 관측 횟수, 실행 파일, 목적지 IP·포트, 프로토콜이 표시됩니다. 같은 경로·IP·포트·프로토콜로 첫 관측부터 60초 이내에 일어난 차단을 묶습니다. 이름 단서는 PC의 DNS 역방향 캐시에서만 읽어 실제 목적지 IP와 별도로 표시합니다.

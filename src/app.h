@@ -48,6 +48,9 @@ bool expandNetworks(const std::vector<std::wstring>& input, std::vector<std::wst
 bool resolveApps(unsigned selected, std::vector<std::wstring>& paths, std::wstring& error);
 int githubWindow();
 bool githubHost(const std::string& host);
+bool googleLoginHost(const std::string& host);
+bool googleLoginAllowed();
+DWORD setGoogleLoginAllowed(bool enabled);
 std::vector<Adapter> adapters(std::wstring& error);
 bool validate(const Settings& settings, std::wstring& error);
 // Empty on failure. Production only. Tests and previews never use this directory.
