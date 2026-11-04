@@ -108,7 +108,7 @@ Set-Acl $legacyData $legacyAcl
 [IO.File]::WriteAllBytes("$legacyData\$journal", [byte[]](255..0))
 $settingsHash = (Get-FileHash "$legacyData\settings.dat").Hash
 $journalHash = (Get-FileHash "$legacyData\$journal").Hash
-if (Invoke-Setup $alternate) { throw 'Legacy-to-rc.2 relocation failed.' }
+if (Invoke-Setup $alternate) { throw 'Legacy-to-current relocation failed.' }
 Assert-Installed $alternate
 if ((Test-Path "$default\ToggleExternalConnection.exe") -or
     (Get-FileHash "$alternate\Data\settings.dat").Hash -ne $settingsHash -or
@@ -118,4 +118,4 @@ if ($LASTEXITCODE) { throw 'Legacy settings did not load after relocation.' }
 $uninstaller = (Get-ChildItem "$alternate\unins*.exe").FullName
 $run = Start-Process $uninstaller -ArgumentList $silent -Wait -PassThru -WindowStyle Hidden
 if ($run.ExitCode -or (Test-Path $key) -or (Test-Path "$alternate\Data\settings.dat")) { throw 'Legacy-upgrade uninstall failed.' }
-Write-Output 'PASS: OS guard, default/custom destinations, rc.2 and published rc.1 upgrades, data migration, unsafe/unrelated-path rejection and uninstall.'
+Write-Output 'PASS: OS guard, default/custom destinations, current and published rc.1 upgrades, data migration, unsafe/unrelated-path rejection and uninstall.'

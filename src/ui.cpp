@@ -9,18 +9,17 @@
 #include <chrono>
 #include <future>
 #include <sstream>
-#include <thread>
 
 namespace {
 constexpr COLORREF background = RGB(32,34,38), panel = RGB(43,46,52);
 constexpr COLORREF input = RGB(29,32,37), editor = RGB(21,24,29);
 constexpr COLORREF foreground = RGB(236,238,241), muted = RGB(176,183,194);
 constexpr COLORREF accent = RGB(56,108,176), focus = RGB(143,193,255);
-constexpr UINT trayMessage = WM_APP + 1, trialEnded = WM_APP + 2;
-constexpr UINT timerRefresh = 1, timerClick = 2, timerTrial = 3;
+constexpr UINT trayMessage = WM_APP + 1;
+constexpr UINT timerRefresh = 1, timerClick = 2;
 enum { navSettings = 1001, navHistory, toggleButton, adapterCombo, networkEdit,
-       dnsEdit, saveButton, trialButton, appFilter, ipFilter, historyList,
-       selectedPath, refreshButton, firstDev, lastDev=firstDev+4, googleOption, webCommand, exitCommand = 1100, trialCommand };
+       dnsEdit, saveButton, appFilter, ipFilter, historyList,
+       selectedPath, refreshButton, firstDev, lastDev=firstDev+4, googleOption, webCommand, exitCommand = 1100 };
 const wchar_t* devNames[]={L"Codex",L"Claude",L"Antigravity",L"Git · gh",L"GitHub 웹"};
 HINSTANCE instance;
 UINT taskbarCreated;
@@ -74,7 +73,7 @@ std::wstring stamp(FILETIME time) {
 
 struct Ui {
     HWND window{}, settingsPane{}, historyPane{}, adaptersControl{}, networks{}, dns{}, metadata{},
-         save{}, trial{}, toggle{}, settingsNav{}, historyNav{}, logControl{}, list{}, appSearch{}, ipSearch{}, path{};
+         save{}, toggle{}, settingsNav{}, historyNav{}, logControl{}, list{}, appSearch{}, ipSearch{}, path{};
     std::vector<HWND> settingsChildren;
     HWND dev[5]{}, googleLogin{};
     std::vector<tec::Adapter> adapters;
@@ -82,21 +81,15 @@ struct Ui {
     tec::Settings saved;
     tec::Engine engine;
     std::future<std::pair<unsigned,bool>> healthCheck;
-    std::thread trialDeadline;
-    HANDLE trialCancel = nullptr;
     unsigned generation = 0;
     std::unique_ptr<tec::History> history;
     std::wstring dir, notice = L"설정을 확인하고 저장한 뒤 차단을 시작하세요.";
     std::wstring captureIssue, historyIssue;
     bool preview = false, historyMode = false, confirmed = false, trayVisible = false, ignoreTrayUp = false;
     int dpi = 96, scroll = 0, day = -1;
-    ULONGLONG trialUntil = 0;
 
     ~Ui() {
-        if(trialCancel) SetEvent(trialCancel);
-        if(trialDeadline.joinable()) trialDeadline.join();
         if(healthCheck.valid()) healthCheck.wait();
-        if(trialCancel) CloseHandle(trialCancel);
     }
 
     int s(int value) const { return MulDiv(value, dpi, 96); }
@@ -152,7 +145,6 @@ struct Ui {
         SetWindowTextW(toggle, active ? L"외부 연결 허용" : L"외부 연결 차단");
         EnableWindow(toggle, !preview && (active || confirmed));
         EnableWindow(save, !preview && !active);
-        EnableWindow(trial, !preview && confirmed && !active);
         EnableWindow(adaptersControl, !preview && !active);
         for (auto box : dev) EnableWindow(box,!preview && !active);
         EnableWindow(googleLogin,!preview && !active && SendMessageW(dev[4],BM_GETCHECK,0,0)==BST_CHECKED);
@@ -243,7 +235,7 @@ struct Ui {
         confirmed = true;
         addLog(L"설정을 저장했습니다. 외부 연결 차단을 시작할 수 있습니다."); updateState();
     }
-    void start(bool test) {
+    void start() {
         if (preview || engine.active()) return;
         if (!confirmed) { show(false); failure(L"먼저 어댑터와 허용 범위를 확인하고 설정을 저장하세요."); return; }
         std::wstring error;
@@ -258,42 +250,24 @@ struct Ui {
         policy.networks = saved.networks; policy.dns = saved.dns;
         if (!tec::resolveApps(saved.apps,policy.appPaths,error)) { failure(error); return; }
         if (saved.apps & 16) policy.webHelper=tec::installedExe();
-        if(test && !trialCancel) trialCancel=CreateEventW(nullptr,TRUE,FALSE,nullptr);
-        if(test && !trialCancel) { failure(L"시험 차단의 자동 해제 타이머를 만들지 못했습니다."); return; }
         std::wstring warning;
         if (!engine.start(policy, [this](tec::Attempt attempt) { if (history) history->push(std::move(attempt)); }, error, warning)) {
             failure(error); updateState(); return;
         }
         ++generation;
-        trialUntil = test ? GetTickCount64() + 60000 : 0;
-        if (test) {
-            if(trialDeadline.joinable()) trialDeadline.join();
-            ResetEvent(trialCancel);
-            const unsigned trialGeneration=generation;
-            // The deadline also releases filters if the UI is waiting on disk or a system dialog.
-            trialDeadline=std::thread([this,trialGeneration] {
-                if(WaitForSingleObject(trialCancel,60000)==WAIT_TIMEOUT) {
-                    engine.stop(); PostMessageW(window,trialEnded,trialGeneration,0);
-                }
-            });
-            SetTimer(window, timerTrial, 250, nullptr);
-        }
         captureIssue=warning;
-        addLog(test ? L"60초 시험 차단을 시작했습니다. 시간이 끝나면 자동으로 허용합니다." : L"모든 어댑터의 외부 연결을 차단하고, 선택한 어댑터의 지정한 내부 주소를 허용합니다.");
+        addLog(L"모든 어댑터의 외부 연결을 차단하고, 선택한 어댑터의 지정한 내부 주소를 허용합니다.");
         if (!warning.empty()) addLog(warning);
         updateState();
     }
     void stop(const wchar_t* reason = L"외부 연결을 허용합니다.") {
         ++generation;
-        if(trialCancel) SetEvent(trialCancel);
         engine.stop();
-        if(trialDeadline.joinable()) trialDeadline.join();
-        KillTimer(window, timerTrial); trialUntil = 0;
         captureIssue.clear();
         if (history) history->flush();
         addLog(reason); updateState();
     }
-    void toggleState() { if (engine.active()) stop(); else start(false); }
+    void toggleState() { if (engine.active()) stop(); else start(); }
     void sampleHistory() {
         FILETIME now{}; GetSystemTimeAsFileTime(&now);
         const wchar_t* apps[] = {L"C:\\Program Files\\Microsoft\\Edge\\Application\\msedge.exe",
@@ -348,8 +322,6 @@ struct Ui {
         AppendMenuW(popup, MF_STRING, navHistory, L"차단 기록 보기");
         AppendMenuW(popup, MF_STRING | ((saved.apps&16) ? 0 : MF_GRAYED), webCommand, L"MiniBrowser에서 GitHub 열기");
         AppendMenuW(popup, MF_SEPARATOR, 0, nullptr);
-        AppendMenuW(popup, MF_STRING | (engine.active() || !confirmed ? MF_GRAYED : 0), trialCommand, L"60초 시험 차단");
-        AppendMenuW(popup, MF_SEPARATOR, 0, nullptr);
         AppendMenuW(popup, MF_STRING, exitCommand, L"종료 · 연결 허용");
         POINT cursor{}; GetCursorPos(&cursor); SetForegroundWindow(window);
         TrackPopupMenu(popup, TPM_RIGHTBUTTON | TPM_BOTTOMALIGN, cursor.x, cursor.y, 0, window, nullptr);
@@ -385,7 +357,7 @@ struct Ui {
         const int step=(width-36)/5;
         for (int i=0;i<5;++i) place(dev[i],margin+i*step,y+411,step-3,28);
         place(googleLogin,margin,y+444,width-36,28);
-        place(save, margin, y+492, 150, 40); place(trial, margin+164, y+492, 170, 40);
+        place(save, margin, y+492, 150, 40);
         place(settingsChildren[5], margin, y+551, width-36, 24);
         place(logControl, margin, y+580, width-36, statusHeight);
     }
@@ -521,7 +493,6 @@ void createControls() {
     ui->label(L"예: 172.16.1.*, 172.16.*.*, 172.16.1.2?\r\n한 줄에 하나씩 입력하세요. ?는 숫자 한 자리입니다.");
     ui->label(L"DNS 예외는 TCP/UDP 53번 포트에만 적용됩니다.\r\n내부망과 DNS는 별도로 저장합니다.");
     ui->save=ui->control(ui->settingsPane,L"BUTTON",L"설정 확인 및 저장",BS_OWNERDRAW|BS_NOTIFY|WS_TABSTOP,saveButton);
-    ui->trial=ui->control(ui->settingsPane,L"BUTTON",L"60초 시험 차단",BS_OWNERDRAW|BS_NOTIFY|WS_TABSTOP,trialButton);
     ui->label(L"현재 상태");
     ui->label(L"차단 중 외부 접속을 허용할 개발 앱");
     for (int i=0;i<5;++i) {
@@ -558,13 +529,12 @@ void paintWindow(HWND hwnd) {
     DrawTextW(dc,status.c_str(),-1,&title,DT_SINGLELINE|DT_END_ELLIPSIS);
     SetTextColor(dc,muted); SelectObject(dc,normalFont);
     std::wstring detail=ui->preview ? L"UI 검증 모드 · 네트워크와 저장된 설정은 변경되지 않습니다" :
-        active ? L"모든 외부 연결 차단 · 선택한 어댑터의 내부 주소만 허용" : L"트레이 아이콘을 한 번 클릭하면 차단 상태가 바뀝니다";
+        active ? L"외부 연결 차단 중 · 트레이 아이콘을 다시 누르면 해제됩니다" : L"트레이 아이콘을 한 번 클릭하면 차단 상태가 바뀝니다";
     if(active && !ui->loggingReason().empty()) detail=L"기록 불가: " + ui->loggingReason();
-    if (ui->trialUntil) detail=L"시험 차단 · " + std::to_wstring(((ui->trialUntil>GetTickCount64() ? ui->trialUntil-GetTickCount64() : 0)+999)/1000) + L"초 후 자동 허용";
     RECT description{ui->s(22),ui->s(63),r.right-ui->s(22),ui->s(88)};
     DrawTextW(dc,detail.c_str(),-1,&description,DT_SINGLELINE|DT_END_ELLIPSIS);
     RECT footer{ui->s(22),r.bottom-ui->s(30),r.right-ui->s(22),r.bottom-ui->s(6)};
-    const std::wstring foot=ui->preview ? L"미리 보기에서는 차단·저장·시험 기능을 사용할 수 없습니다." :
+    const std::wstring foot=ui->preview ? L"미리 보기에서는 차단·저장 기능을 사용할 수 없습니다." :
         ui->historyMode ? L"차단 시도 기록 · 이름은 참고 정보입니다" : L"닫으면 트레이로 숨김 · 종료하면 차단 해제";
     DrawTextW(dc,foot.c_str(),-1,&footer,DT_SINGLELINE|DT_END_ELLIPSIS);
     EndPaint(hwnd,&ps);
@@ -610,7 +580,6 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wp, LPARAM lp) {
         case navSettings: ui->show(false); return 0; case navHistory: ui->show(true); return 0;
         case toggleButton: ui->toggleState(); return 0;
         case saveButton: ui->saveSettings(); return 0;
-        case trialButton: case trialCommand: ui->start(true); return 0;
         case exitCommand: DestroyWindow(hwnd); return 0;
         case adapterCombo:
             if(HIWORD(wp)==CBN_SELCHANGE) { ui->fillAdapter(false); ui->confirmed=false; ui->updateState(); } return 0;
@@ -648,29 +617,22 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wp, LPARAM lp) {
         else if(lp==WM_LBUTTONDBLCLK) { KillTimer(hwnd,timerClick); ui->ignoreTrayUp=true; ui->show(false); }
         else if(lp==WM_RBUTTONUP || lp==WM_CONTEXTMENU) { KillTimer(hwnd,timerClick); ui->menu(); }
         return 0;
-    case trialEnded:
-        if(static_cast<unsigned>(wp)==ui->generation)
-            ui->stop(L"60초 시험 차단이 끝나 외부 연결을 허용합니다.");
-        return 0;
     case WM_TIMER:
         if(wp==timerClick) { KillTimer(hwnd,timerClick); ui->toggleState(); }
-        else if(wp==timerTrial) {
-            if(GetTickCount64()>=ui->trialUntil) ui->stop(L"60초 시험 차단이 끝나 외부 연결을 허용합니다.");
-            else InvalidateRect(hwnd,nullptr,FALSE);
-        } else if(wp==timerRefresh) {
+        else if(wp==timerRefresh) {
             if(!ui->preview && !ui->trayVisible) ui->updateTray();
             if(ui->healthCheck.valid() && ui->healthCheck.wait_for(std::chrono::milliseconds(0))==std::future_status::ready) {
                 const auto result=ui->healthCheck.get();
                 if(result.first==ui->generation && ui->engine.active() && !result.second)
                     ui->stop(L"필터 상태를 확인할 수 없어 차단을 종료했습니다. 다시 시작하기 전에 상태를 확인하세요.");
             }
-            if(ui->engine.active() && !ui->trialUntil && !ui->healthCheck.valid()) {
+            if(ui->engine.active() && !ui->healthCheck.valid()) {
                 const unsigned generation=ui->generation;
                 ui->healthCheck=std::async(std::launch::async,[generation] { return std::make_pair(generation,ui->engine.healthy()); });
             }
             if(ui->history) {
                 SYSTEMTIME today{}; GetLocalTime(&today);
-                if(ui->day!=today.wDay && !ui->trialUntil) { ui->day=today.wDay; ui->history->maintain(); }
+                if(ui->day!=today.wDay) { ui->day=today.wDay; ui->history->maintain(); }
                 const auto error=ui->history->error();
                 if(error!=ui->historyIssue) { ui->historyIssue=error; ui->addLog(error); ui->updateState(); }
             }
@@ -684,9 +646,7 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wp, LPARAM lp) {
         return 0;
     case WM_DESTROY: {
         ++ui->generation;
-        if(ui->trialCancel) SetEvent(ui->trialCancel);
         ui->engine.stop();
-        if(ui->trialDeadline.joinable()) ui->trialDeadline.join();
         if(ui->healthCheck.valid()) ui->healthCheck.wait();
         if(ui->history) ui->history->flush();
         NOTIFYICONDATAW icon{}; icon.cbSize=sizeof(icon); icon.hWnd=hwnd; icon.uID=1;
