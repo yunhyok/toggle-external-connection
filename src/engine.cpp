@@ -284,7 +284,7 @@ struct Engine::Impl {
     DWORD add(const Layer& layer, bool permit, std::vector<FWPM_FILTER_CONDITION0> conditions) {
 #ifdef TEC_TESTING
         // A live allow-list test can deny only this test executable; production filters remain unmodified.
-        if (!permit && restrictedTestApp) {
+        if (!permit && restrictedTestApp && !inspect) {
             if (restrictedTestApp->size==0 || !restrictedTestApp->data ||
                 (!layer.ale && !IsEqualGUID(*layer.key,FWPM_LAYER_ALE_AUTH_RECV_ACCEPT_V4) &&
                  !IsEqualGUID(*layer.key,FWPM_LAYER_ALE_AUTH_RECV_ACCEPT_V6))) return ERROR_INVALID_PARAMETER;
@@ -359,17 +359,27 @@ struct Engine::Impl {
     DWORD rules(const Policy& policy, const std::vector<Prefix>& networks,
                 const std::vector<Prefix>& dns, const std::vector<Prefix>& dhcp) {
         DWORD result = ERROR_SUCCESS;
-        std::vector<Layer> activeLayers;
-        if (policy.appPaths.empty() && policy.webHelper.empty()) activeLayers.assign(std::begin(layers),std::end(layers));
-        else {
-            // Transport cannot identify a process. ALE reauthorizes existing flows when policy changes.
-            activeLayers={layers[4], layers[5], acceptLayers[0], acceptLayers[1]};
+        std::vector<Layer> activeLayers(std::begin(layers),std::end(layers));
+        const bool appMode=!policy.appPaths.empty() || !policy.webHelper.empty();
+        if (appMode) {
+            activeLayers.insert(activeLayers.end(),std::begin(acceptLayers),std::end(acceptLayers));
+#ifdef TEC_TESTING
+            // The live test scopes every block to the test executable. Transport has no app identity.
+            if(restrictedTestApp && !inspect) activeLayers.erase(activeLayers.begin(),activeLayers.begin()+4);
+#endif
         }
         expectedBlocks=activeLayers.size();
         for (const auto& layer : activeLayers) {
             if (result != ERROR_SUCCESS) break;
             result = add(layer, true, {number(FWPM_CONDITION_FLAGS, FWP_UINT32,
                          FWP_CONDITION_FLAG_IS_LOOPBACK, FWP_MATCH_FLAGS_ALL_SET)});
+            // Only TCP/UDP move to stateful ALE authorization. Keep raw and other protocols' packet filters.
+            const bool transport=IsEqualGUID(*layer.key,FWPM_LAYER_INBOUND_TRANSPORT_V4) ||
+                IsEqualGUID(*layer.key,FWPM_LAYER_OUTBOUND_TRANSPORT_V4) ||
+                IsEqualGUID(*layer.key,FWPM_LAYER_INBOUND_TRANSPORT_V6) || IsEqualGUID(*layer.key,FWPM_LAYER_OUTBOUND_TRANSPORT_V6);
+            if (appMode && transport) for (int protocol : {IPPROTO_TCP,IPPROTO_UDP}) {
+                if(result==ERROR_SUCCESS) result=add(layer,true,{number(FWPM_CONDITION_IP_PROTOCOL,FWP_UINT8,protocol)});
+            }
             auto allowedApps=policy.appPaths;
             if (!policy.webHelper.empty()) allowedApps.push_back(policy.webHelper);
             if (layer.ale) for (const auto& path : allowedApps) {
@@ -806,8 +816,11 @@ void testCiAppException() {
     struct FreeId {~FreeId(){FwpmFreeMemory0(reinterpret_cast<void**>(&tec::restrictedTestApp));tec::restrictedTestApp=nullptr;}} freeId;
     tec::Policy policy; policy.luid=123; policy.networks={L"172.16.*.*"};
     std::wstring err,warn;
-    for(bool allow : {true,false}) {
-        policy.appPaths={allow ? std::wstring(self) : std::wstring(system)+L"\\whoami.exe"};
+    for(int scenario : {0,1,2}) {
+        const bool allow=scenario!=2;
+        policy.appPaths.clear(); policy.webHelper.clear();
+        if(scenario==1) policy.webHelper=self;
+        else policy.appPaths={allow ? std::wstring(self) : std::wstring(system)+L"\\whoami.exe"};
         tec::Engine engine;
         if(!engine.start(policy,{},err,warn)) throw std::runtime_error(tec::testText(err));
         int result=dial();
@@ -827,13 +840,18 @@ void testWfpRollback() {
     policy.dhcp = {L"198.51.100.67", L"2001:db8:ffff::547"};
     tec::Engine engine;
     std::wstring error, warning;
-    tec::abortForTest = true;
-    tec::rollbackAccepted = false;
-    tec::wfpTestCode = ERROR_SUCCESS;
-    engine.start(policy, {}, error, warning);
-    tec::abortForTest = false;
-    if (!tec::rollbackAccepted || engine.active())
-        throw std::runtime_error("WFP staging/rollback failed; native error=" + std::to_string(tec::wfpTestCode));
+    wchar_t self[32768]{};
+    if (!GetModuleFileNameW(nullptr,self,32768)) throw std::runtime_error("missing test path");
+    for(bool withApps : {false,true}) {
+        if(withApps) policy.webHelper=self;
+        tec::abortForTest = true;
+        tec::rollbackAccepted = false;
+        tec::wfpTestCode = ERROR_SUCCESS;
+        engine.start(policy, {}, error, warning);
+        tec::abortForTest = false;
+        if (!tec::rollbackAccepted || engine.active())
+            throw std::runtime_error("WFP staging/rollback failed; native error=" + std::to_string(tec::wfpTestCode));
+    }
 }
 
 void testWfpProbe() {
