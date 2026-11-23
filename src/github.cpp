@@ -77,8 +77,9 @@ void tunnel(SOCKET client,const std::atomic<bool>& stopping,bool (*allowGoogle)(
         int n=recv(client,buf,2048,0); if(n<=0) return;
         header.append(buf,n); end=header.find("\r\n\r\n");
     }
+    const auto lineEnd=header.find("\r\n");
     const auto space=header.find(' ',8);
-    if (end==header.npos || space==header.npos || header.compare(0,8,"CONNECT ")!=0) return;
+    if (end==header.npos || lineEnd==header.npos || space==header.npos || space>=lineEnd || header.compare(0,8,"CONNECT ")!=0) return;
     auto authority=header.substr(8,space-8);
     for(auto& c:authority) if(c>='A' && c<='Z') c+=32;
     const auto host=authority.size()>4 && authority.compare(authority.size()-4,4,":443")==0
