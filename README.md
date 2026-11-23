@@ -39,7 +39,7 @@ Windows 트레이에서 외부 인터넷을 차단하고 지정한 인트라넷 
 |:---:|:---:|
 | Codex | 설치된 Codex 데스크톱과 실행 중인 버전별 Codex 통신 프로세스 |
 | Claude | 설치된 Windows 패키지의 Claude 데스크톱 |
-| Antigravity | 기본 사용자 설치의 Antigravity·Antigravity IDE와 전용 언어 서버 |
+| Antigravity | Antigravity 데스크톱·Antigravity IDE(기본·공용·사용자 지정 설치 경로), 전용 언어 서버, Antigravity CLI(`agy.exe`) 및 설치된 플러그인 실행 파일 |
 | Git · gh | Git for Windows, Git의 HTTPS·SSH·LFS 도구, GitHub CLI, 탐지된 GitHub Desktop |
 | GitHub 웹 | 트레이의 **MiniBrowser에서 GitHub 열기** 또는 시작 메뉴의 **GitHub Web** |
 

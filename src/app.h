@@ -49,6 +49,9 @@ DWORD saveHistoryCsv(const std::wstring& destination, const std::vector<Row>& ro
 
 bool parsePrefix(const std::wstring& text, int& family, std::array<unsigned char,16>& bytes, unsigned& bits);
 bool expandNetworks(const std::vector<std::wstring>& input, std::vector<std::wstring>& output, std::wstring& error);
+void collectAntigravityApps(const std::wstring& localAppData, const std::wstring& programFiles,
+                            const std::wstring& userProfile, const std::vector<std::wstring>& extraRoots,
+                            std::vector<std::wstring>& paths);
 bool resolveApps(unsigned selected, std::vector<std::wstring>& paths, std::wstring& error);
 int githubWindow();
 bool githubHost(const std::string& host);

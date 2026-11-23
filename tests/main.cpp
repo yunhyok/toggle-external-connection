@@ -1,6 +1,9 @@
 #include "app.h"
+#include <algorithm>
 #include <cstdio>
 #include <cstring>
+#include <filesystem>
+#include <fstream>
 #include <stdexcept>
 #include <ws2tcpip.h>
 
@@ -64,6 +67,51 @@ static void testSettings() {
     DeleteFileW((dir+L"\\settings.dat").c_str()); RemoveDirectoryW(path);
 }
 
+static void testAntigravityDiscovery() {
+    wchar_t tmp[MAX_PATH]{}, rootBuf[MAX_PATH]{};
+    check(GetTempPathW(MAX_PATH, tmp) && GetTempFileNameW(tmp, L"agy", 0, rootBuf), "antigravity temp path");
+    DeleteFileW(rootBuf);
+    const std::filesystem::path root(rootBuf);
+    struct Cleanup {
+        std::filesystem::path p;
+        ~Cleanup() { std::error_code ec; std::filesystem::remove_all(p, ec); }
+    } cleanup{root};
+    const auto touch = [](const std::filesystem::path& file) {
+        std::filesystem::create_directories(file.parent_path());
+        std::ofstream out(file, std::ios::binary);
+        out << "MZ";
+    };
+    const auto local = root / L"LocalAppData";
+    const auto pf = root / L"ProgramFiles";
+    const auto profile = root / L"Profile";
+    const auto custom = root / L"CustomAntigravity";
+    const std::vector<std::filesystem::path> expected = {
+        local / L"Programs" / L"Antigravity" / L"Antigravity.exe",
+        local / L"Programs" / L"Antigravity" / L"resources" / L"bin" / L"language_server.exe",
+        local / L"Programs" / L"Antigravity IDE" / L"Antigravity IDE.exe",
+        local / L"Programs" / L"Antigravity IDE" / L"resources" / L"app" / L"extensions" / L"antigravity" / L"bin" / L"language_server_windows_x64.exe",
+        local / L"agy" / L"bin" / L"agy.exe",
+        pf / L"Antigravity" / L"Antigravity.exe",
+        custom / L"Antigravity.exe",
+        custom / L"resources" / L"bin" / L"language_server_windows_arm64.exe",
+        profile / L".local" / L"bin" / L"agy.exe",
+        profile / L".gemini" / L"antigravity" / L"plugin_data" / L"gdrive" / L"bin" / L"gdrive-1.exe"
+    };
+    for (const auto& f : expected) touch(f);
+    touch(profile / L".gemini" / L"antigravity" / L"plugin_data" / L"gdrive" / L"bin" / L"readme.txt");
+    std::vector<std::wstring> found;
+    tec::collectAntigravityApps(local.wstring(), pf.wstring(), profile.wstring(),
+        {custom.wstring() + L"\\", (local / L"Programs" / L"antigravity").wstring() + L"\\"}, found);
+    check(found.size() == expected.size(), "exact deduplicated Antigravity binary count");
+    for (const auto& file : expected) {
+        const auto target = file.wstring();
+        const bool present = std::any_of(found.begin(), found.end(), [&](const std::wstring& p) {
+            return _wcsicmp(p.c_str(), target.c_str()) == 0;
+        });
+        check(present, "discovered expected Antigravity executable");
+    }
+}
+
 int main(int argc, char** argv) {
     try {
         if (argc==2 && std::strcmp(argv[1],"--ci-app-exception")==0) {
@@ -103,7 +151,7 @@ int main(int argc, char** argv) {
             return 0;
         }
         if (argc != 1) return 2;
-        testSettings(); testEngine(); testHistory();
+        testSettings(); testAntigravityDiscovery(); testEngine(); testHistory();
         std::puts("PASS: settings, filter/attribution policy, history and retention (offline).");
         return 0;
     } catch (const std::exception& ex) {

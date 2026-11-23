@@ -380,20 +380,29 @@ struct Engine::Impl {
             if (appMode && transport) for (int protocol : {IPPROTO_TCP,IPPROTO_UDP}) {
                 if(result==ERROR_SUCCESS) result=add(layer,true,{number(FWPM_CONDITION_IP_PROTOCOL,FWP_UINT8,protocol)});
             }
-            auto allowedApps=policy.appPaths;
-            if (!policy.webHelper.empty()) allowedApps.push_back(policy.webHelper);
-            if (layer.ale) for (const auto& path : allowedApps) {
-                if (result!=ERROR_SUCCESS) break;
-                FWP_BYTE_BLOB* id=nullptr;
-                result=FwpmGetAppIdFromFileName0(path.c_str(),&id);
-                if (result!=ERROR_SUCCESS) break;
-                auto identity=number(FWPM_CONDITION_ALE_APP_ID,FWP_BYTE_BLOB_TYPE,0);
-                identity.conditionValue.byteBlob=id;
-                if (path==policy.webHelper)
-                    result=add(layer,true,{identity,number(FWPM_CONDITION_IP_PROTOCOL,FWP_UINT8,IPPROTO_TCP),
-                                          number(FWPM_CONDITION_IP_REMOTE_PORT,FWP_UINT16,443)});
-                else result=add(layer,true,{identity});
-                FwpmFreeMemory0(reinterpret_cast<void**>(&id));
+            if (layer.ale) {
+                for (const auto& path : policy.appPaths) {
+                    if (result != ERROR_SUCCESS) break;
+                    FWP_BYTE_BLOB* id = nullptr;
+                    result = FwpmGetAppIdFromFileName0(path.c_str(), &id);
+                    if (result != ERROR_SUCCESS) break;
+                    auto identity = number(FWPM_CONDITION_ALE_APP_ID, FWP_BYTE_BLOB_TYPE, 0);
+                    identity.conditionValue.byteBlob = id;
+                    result = add(layer, true, {identity});
+                    FwpmFreeMemory0(reinterpret_cast<void**>(&id));
+                }
+                if (result == ERROR_SUCCESS && !policy.webHelper.empty()) {
+                    FWP_BYTE_BLOB* id = nullptr;
+                    result = FwpmGetAppIdFromFileName0(policy.webHelper.c_str(), &id);
+                    if (result == ERROR_SUCCESS) {
+                        auto identity = number(FWPM_CONDITION_ALE_APP_ID, FWP_BYTE_BLOB_TYPE, 0);
+                        identity.conditionValue.byteBlob = id;
+                        result = add(layer, true, {identity,
+                                     number(FWPM_CONDITION_IP_PROTOCOL, FWP_UINT8, IPPROTO_TCP),
+                                     number(FWPM_CONDITION_IP_REMOTE_PORT, FWP_UINT16, 443)});
+                        FwpmFreeMemory0(reinterpret_cast<void**>(&id));
+                    }
+                }
             }
             for (const auto& network : networks) {
                 if (result != ERROR_SUCCESS) break;
